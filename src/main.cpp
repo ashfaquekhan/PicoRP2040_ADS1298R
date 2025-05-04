@@ -129,12 +129,14 @@ bool ADS1298R::begin() {
   digitalWrite(ADS1298_CS_PIN, HIGH);
   digitalWrite(ADS1298_START_PIN, LOW);
   digitalWrite(ADS1298_RESET_PIN, HIGH);
-  
+  delay(50);
+
   // Initialize SPI
   if (!PicoSPI0.configure(2, 3, 4, 5, SPI_FREQ*1000000ul, 1, false)) {
     return false;
   }
-  
+
+  delay(50);
   // Hard reset
   hardReset();
   
@@ -151,12 +153,17 @@ bool ADS1298R::begin() {
 
 void ADS1298R::hardReset() {
   digitalWrite(ADS1298_RESET_PIN, LOW);
-  delay(10);
+  delay(100);
   digitalWrite(ADS1298_RESET_PIN, HIGH);
   delay(150); // Wait for reset to complete
+
+  delay(10);
   
   // Read device ID to flush SPI
   readRegister(ADS1298_REG_ID);
+  
+  delay(20);
+
 }
 
 void ADS1298R::reset() {
