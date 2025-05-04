@@ -48,7 +48,7 @@
 #define ADS1298_REG_WCT2     0x19
 
 // SPI Configuration
-#define SPI_FREQ 2 // 2MHz for better reliability
+#define SPI_FREQ 1 // 2MHz for better reliability
 
 // Device Status and Data Structure
 struct ADS1298RData {
