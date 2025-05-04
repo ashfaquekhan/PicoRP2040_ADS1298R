@@ -293,13 +293,12 @@ void ADS1298R::startContinuous() {
 }
 
 void ADS1298R::printChannelData(const ADS1298RData* data) {
-  Serial.print("Channels: ");
+  // Serial.print("Channels: ");
   for (int i = 0; i < 8; i++) {
-    Serial.print("CH");
-    Serial.print(i + 1);
-    Serial.print(": ");
+    // Serial.print("CH");
     Serial.print(data->channelData[i]);
-    if (i < 7) Serial.print(" | ");
+    Serial.print(",");
+    // if (i < 7) Serial.print(" | ");
   }
   Serial.println();
 }
