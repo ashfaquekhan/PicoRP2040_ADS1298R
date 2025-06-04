@@ -293,14 +293,49 @@ void ADS1298R::startContinuous() {
 }
 
 void ADS1298R::printChannelData(const ADS1298RData* data) {
-  // Serial.print("Channels: ");
-  for (int i = 0; i < 8; i++) {
-    // Serial.print("CH");
-    Serial.print(data->channelData[i]);
+
+    Serial.print(data->channelData[0]);
     Serial.print(",");
-    // if (i < 7) Serial.print(" | ");
-  }
-  Serial.println();
+    Serial.print(data->channelData[1]);
+    Serial.print(",");
+    Serial.print(data->channelData[2]);
+    Serial.print(",");
+    Serial.print(data->channelData[3]);
+    Serial.print(",");
+    Serial.print(data->channelData[4]);
+    Serial.print(",");
+    Serial.print(data->channelData[5]);
+    Serial.print(",");
+    Serial.print(data->channelData[6]);
+    Serial.print(",");
+    Serial.print(data->channelData[7]);
+    // Serial.print(" | Lead-off P: ");
+    // Serial.print(data->leadOffStatusP, BIN);
+    // Serial.print(" | Lead-off N: ");
+    // Serial.print(data->leadOffStatusN, BIN);
+    // Serial.print(" | GPIO: ");
+    // Serial.print(data->gpioData, BIN);
+    // Serial.print(" | Status: ");
+    // Serial.print((data->channelData[0] & 0x800000) ? "Negative" : "Positive");
+    // Serial.print(" | DRDY: ");
+    // Serial.print(digitalRead(ADS1298_DRDY_PIN) == HIGH ? "High" : "Low"); 
+    // Serial.print(" | Continuous: ");
+    // Serial.print(continuousMode ? "Yes" : "No");
+    // Serial.print(" | SPI Frequency: ");
+    // Serial.print(SPI_FREQ);
+    // Serial.print(" MHz | ");
+    // Serial.print("Data Ready: ");
+    // Serial.print(isDataReady() ? "Yes" : "No");
+    // Serial.print(" | ");
+    // Serial.print("Time: ");
+    // Serial.print(millis());
+    // Serial.print(" ms");
+    // Serial.print(" | ");
+    // Serial.print("Timestamp: ");
+    // Serial.print(millis() / 1000);
+    // Serial.print(" seconds");
+    // Serial.print(" | ");
+     Serial.println();
 }
 
 // Global instance
@@ -368,6 +403,6 @@ void loop() {
     // Print all channel data in a single line
     ads1298r.printChannelData(&data);
     
-    delay(10); // Small delay to avoid flooding output
+    // delay(10); // Small delay to avoid flooding output
   }
 }
