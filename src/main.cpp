@@ -47,6 +47,17 @@
 #define ADS1298_REG_WCT1     0x18
 #define ADS1298_REG_WCT2     0x19
 
+// Respiration-specific bit definitions
+// CONFIG4 register bits
+#define CONFIG4_RESP_FREQ_32KHZ  0x80  // Bit 7: 32kHz respiration frequency
+#define CONFIG4_SINGLE_SHOT      0x08  // Bit 3: Single-shot mode
+
+// RESP register bits  
+#define RESP_DEMOD_EN1      0x08  // Bit 3: Enable demodulation for channel 1
+#define RESP_MOD_EN1        0x04  // Bit 2: Enable modulation for channel 1  
+#define RESP_PH_112_5       0x38  // Bits 5:3: 112.5 degree phase (111b = 0x38)
+#define RESP_CTRL_INT_SIG   0x02  // Bits 1:0: Internal respiration with internal signals (10b)
+
 // SPI frequency in MHz
 #define SPI_FREQ 1 // 1MHz
 
@@ -56,13 +67,23 @@ struct ADS1298RData {
   uint8_t leadOffStatusP;  // Lead-off status positive
   uint8_t leadOffStatusN;  // Lead-off status negative
   uint8_t gpioData;        // GPIO data
+  
+  // Derived respiration data
+  float respirationValue;  // Processed respiration signal
+  bool respirationValid;   // Whether respiration data is valid
 };
 
 class ADS1298R {
 private:
   volatile bool dataReady;
   volatile bool continuousMode;
+  bool respirationEnabled;
   uint8_t regCache[26];  // Cache for register values
+  
+  // Respiration signal processing
+  int32_t respirationBaseline;
+  float respirationLPF;  // Low-pass filtered respiration signal
+  const float LPF_ALPHA = 0.1;  // Low-pass filter coefficient (adjust for smoothing)
   
   void waitForSPI() { delayMicroseconds(5); }
   void waitForDecode() { delayMicroseconds(10); }
@@ -93,6 +114,12 @@ public:
   void printChannelConfig(uint8_t channel);
   void printAllChannelConfigs();
   
+  // Respiration Configuration
+  void enableRespiration(bool enable);
+  void configureRespirationRegisters();
+  void processRespirationData(ADS1298RData* data);
+  void printRespirationStatus();
+  
   // High-level Configuration
   void setDataRate(uint8_t rate);
   void enableRLD(bool enable);
@@ -118,7 +145,8 @@ public:
 
 ADS1298R* ADS1298R::instance = nullptr;
 
-ADS1298R::ADS1298R() : dataReady(false), continuousMode(false) {
+ADS1298R::ADS1298R() : dataReady(false), continuousMode(false), respirationEnabled(false), 
+                       respirationBaseline(0), respirationLPF(0.0) {
   instance = this;
 }
 
@@ -373,6 +401,138 @@ void ADS1298R::printAllChannelConfigs() {
   Serial.println();
 }
 
+void ADS1298R::enableRespiration(bool enable) {
+  respirationEnabled = enable;
+  if (enable) {
+    Serial.println("Enabling respiration measurement on Channel 1");
+    configureRespirationRegisters();
+  } else {
+    Serial.println("Disabling respiration measurement");
+    // Clear respiration bits in RESP register
+    writeRegister(ADS1298_REG_RESP, 0x00);
+    // Clear respiration frequency in CONFIG4
+    uint8_t config4 = readRegister(ADS1298_REG_CONFIG4);
+    writeRegister(ADS1298_REG_CONFIG4, config4 & 0x7F); // Clear bit 7
+  }
+}
+
+void ADS1298R::configureRespirationRegisters() {
+  Serial.println("\nConfiguring respiration-specific registers:");
+  Serial.println("==========================================");
+  
+  // Step 1: Configure CONFIG4 register for 32kHz respiration frequency
+  // According to the documentation, we need to set the respiration frequency to 32kHz
+  Serial.println("Setting CONFIG4 for 32kHz respiration frequency");
+  uint8_t config4_val = CONFIG4_RESP_FREQ_32KHZ;  // 0x80 - sets respiration frequency to 32kHz
+  writeRegister(ADS1298_REG_CONFIG4, config4_val);
+  
+  // Step 2: Configure RESP register according to documentation requirements
+  // From section 5.1.2: 
+  // - Respiration Demodulation to Enabled
+  // - Respiration Modulation to Enabled  
+  // - VREF to VREFP (bit 6=0 for VREFP)
+  // - Respiration Phase to 112.5 deg
+  // - Respiration Control to Internal Respiration with Internal Clock
+  Serial.println("Configuring RESP register for internal respiration");
+  
+  uint8_t resp_val = 0x00;
+  resp_val |= RESP_DEMOD_EN1;     // Enable demodulation for channel 1
+  resp_val |= RESP_MOD_EN1;       // Enable modulation for channel 1
+  resp_val |= RESP_PH_112_5;      // Set phase to 112.5 degrees
+  resp_val |= RESP_CTRL_INT_SIG;  // Internal respiration with internal signals
+  // VREF bit (bit 6) remains 0 for VREFP as required
+  
+  writeRegister(ADS1298_REG_RESP, resp_val);
+  
+  Serial.println("Respiration registers configured successfully");
+  Serial.println("Channel 1 will now provide both ECG and respiration data");
+}
+
+void ADS1298R::processRespirationData(ADS1298RData* data) {
+  if (!respirationEnabled) {
+    data->respirationValid = false;
+    return;
+  }
+  
+  // Channel 1 contains the combined ECG + respiration signal
+  // The respiration component appears as a very low frequency variation
+  // We need to extract this low-frequency component
+  
+  int32_t rawCh1 = data->channelData[0];
+  
+  // Initialize baseline on first reading
+  static bool baselineInitialized = false;
+  if (!baselineInitialized) {
+    respirationBaseline = rawCh1;
+    respirationLPF = 0.0;
+    baselineInitialized = true;
+    data->respirationValid = false;
+    return;
+  }
+  
+  // Calculate deviation from baseline (this contains respiration info)
+  int32_t deviation = rawCh1 - respirationBaseline;
+  
+  // Apply low-pass filter to extract respiration signal
+  // Respiration is typically 0.1-0.5 Hz, so we filter out higher frequencies
+  respirationLPF = (LPF_ALPHA * deviation) + ((1.0 - LPF_ALPHA) * respirationLPF);
+  
+  // Update baseline slowly to track long-term drift
+  respirationBaseline += (rawCh1 - respirationBaseline) * 0.001;
+  
+  // Store processed respiration value
+  data->respirationValue = respirationLPF;
+  data->respirationValid = true;
+}
+
+void ADS1298R::printRespirationStatus() {
+  Serial.println("\nRespiration Configuration Status:");
+  Serial.println("=================================");
+  
+  uint8_t config4 = readRegister(ADS1298_REG_CONFIG4);
+  uint8_t resp_reg = readRegister(ADS1298_REG_RESP);
+  
+  Serial.print("CONFIG4 register: 0x");
+  if (config4 < 0x10) Serial.print("0");
+  Serial.println(config4, HEX);
+  
+  Serial.print("  Respiration Frequency: ");
+  if (config4 & 0x80) {
+    Serial.println("32kHz");
+  } else {
+    Serial.println("64kHz");
+  }
+  
+  Serial.print("RESP register: 0x");
+  if (resp_reg < 0x10) Serial.print("0");
+  Serial.println(resp_reg, HEX);
+  
+  Serial.print("  Respiration Control: ");
+  uint8_t resp_ctrl = resp_reg & 0x03;
+  switch(resp_ctrl) {
+    case 0: Serial.println("Disabled"); break;
+    case 1: Serial.println("External respiration"); break;
+    case 2: Serial.println("Internal with internal signals"); break;
+    case 3: Serial.println("Internal with external signals"); break;
+  }
+  
+  Serial.print("  Demodulation: ");
+  Serial.println((resp_reg & 0x08) ? "Enabled" : "Disabled");
+  
+  Serial.print("  Modulation: ");
+  Serial.println((resp_reg & 0x04) ? "Enabled" : "Disabled");
+  
+  Serial.print("  Phase: ");
+  uint8_t phase = (resp_reg >> 3) & 0x07;
+  Serial.print(phase * 22.5);
+  Serial.println(" degrees");
+  
+  Serial.print("  VREF: ");
+  Serial.println((resp_reg & 0x40) ? "VREFN" : "VREFP");
+  
+  Serial.println();
+}
+
 void ADS1298R::configureRLD(uint8_t posChannels, uint8_t negChannels) {
   writeRegister(ADS1298_REG_RLD_SENSP, posChannels);
   writeRegister(ADS1298_REG_RLD_SENSN, negChannels);
@@ -441,6 +601,9 @@ void ADS1298R::readData(ADS1298RData* data) {
   }
   
   PicoSPI0.endTransaction();
+  
+  // Process respiration data if enabled
+  processRespirationData(data);
 }
 
 void ADS1298R::startContinuous() {
@@ -481,12 +644,19 @@ void ADS1298R::stopContinuous() {
 }
 
 void ADS1298R::printChannelData(const ADS1298RData* data) {
-  // Print only active channels (1-3 in our setup)
-  Serial.print(data->channelData[0]); // CH1 - RA
+  // Print ECG channels (1-3 in our setup)
+  Serial.print(data->channelData[0]); // CH1 - RA (contains ECG + respiration)
   Serial.print(",");
   Serial.print(data->channelData[1]); // CH2 - LA
   Serial.print(",");
   Serial.print(data->channelData[2]); // CH3 - LL
+  
+  // Print respiration data if available
+  if (data->respirationValid) {
+    Serial.print(",");
+    Serial.print(data->respirationValue, 2); // Respiration signal with 2 decimal places
+  }
+  
   Serial.println();
 }
 
@@ -498,8 +668,8 @@ void setup() {
   delay(5000); // Give time for serial monitor to open
   
   Serial.println("\n\n========================================");
-  Serial.println("ADS1298R Individual Channel Control");
-  Serial.println("RA, LA, LL ECG Configuration");
+  Serial.println("ADS1298R ECG + Respiration Measurement");
+  Serial.println("RA, LA, LL ECG + Impedance Pneumography");
   Serial.println("========================================");
   
   if (!ads1298r.begin()) {
@@ -510,7 +680,8 @@ void setup() {
   Serial.println("ADS1298R initialized successfully");
   
   // Configure registers
-  Serial.println("Configuring registers");
+  Serial.println("\nConfiguring base registers:");
+  Serial.println("===========================");
   
   // CONFIG1: Set HR mode, DR = 500SPS (110)
   // HR=1 (bit 7), DR=110 (bits 2:0)
@@ -527,7 +698,8 @@ void setup() {
   Serial.println("================================");
   
   // Configure channels for RA, LA, LL ECG measurement
-  ads1298r.configureChannel(1, 0, 0, false); // CH1: RA - Gain=6, Normal electrode, Power UP
+  // Channel 1 will also be used for respiration measurement
+  ads1298r.configureChannel(1, 0, 0, false); // CH1: RA - Gain=6, Normal electrode, Power UP (will also measure respiration)
   ads1298r.configureChannel(2, 0, 0, false); // CH2: LA - Gain=6, Normal electrode, Power UP  
   ads1298r.configureChannel(3, 0, 0, false); // CH3: LL - Gain=6, Normal electrode, Power UP
   
@@ -546,26 +718,37 @@ void setup() {
   // WCTA = CH1P (RA), WCTB = CH2P (LA), WCTC = CH3P (LL)
   ads1298r.configureWCT(0, 2, 4); // CH1P, CH2P, CH3P
   
+  // NOW ENABLE RESPIRATION MEASUREMENT
+  Serial.println("\nEnabling respiration measurement:");
+  Serial.println("=================================");
+  ads1298r.enableRespiration(true);
+  
   // Print current configuration
   ads1298r.printAllChannelConfigs();
+  ads1298r.printRespirationStatus();
   
-  Serial.println("\nRegister Configuration Summary:");
-  Serial.println("==============================");
+  Serial.println("\nConfiguration Summary:");
+  Serial.println("=====================");
   Serial.println("CONFIG1: High-resolution mode, 500 SPS");
   Serial.println("CONFIG2: Normal operation (no test signals)");
   Serial.println("CONFIG3: Internal reference enabled, RLD enabled");
-  Serial.println("CH1-3: Gain=6, Normal electrode input (RA, LA, LL)");
+  Serial.println("CONFIG4: 32kHz respiration frequency enabled");
+  Serial.println("CH1: Gain=6, Normal electrode input (RA) + RESPIRATION");
+  Serial.println("CH2-3: Gain=6, Normal electrode input (LA, LL)");
   Serial.println("CH4-8: Powered down");
   Serial.println("RLD: All three channels for common-mode reduction");
   Serial.println("WCT: Wilson Central Terminal configured");
+  Serial.println("RESP: Internal respiration with 32kHz, 112.5° phase");
   Serial.println();
   
   // Start continuous data mode
   ads1298r.startContinuous();
   
-  Serial.println("Data acquisition started for RA, LA, LL");
-  Serial.println("Data format: RA, LA, LL");
+  Serial.println("Data acquisition started for ECG + Respiration");
+  Serial.println("Data format: RA, LA, LL, Respiration");
   Serial.println("========================================");
+  Serial.println("Commands: 'config', 'respir', 'start', 'stop', 'help'");
+  Serial.println();
 }
 
 void loop() {
@@ -573,17 +756,20 @@ void loop() {
     ADS1298RData data;
     ads1298r.readData(&data);
     
-    // Print channel data for RA, LA, LL
+    // Print channel data for RA, LA, LL + respiration
     ads1298r.printChannelData(&data);
   }
   
-  // Optional: Add commands to change configuration during runtime
+  // Handle serial commands
   if (Serial.available()) {
     String command = Serial.readStringUntil('\n');
     command.trim();
     
     if (command == "config") {
       ads1298r.printAllChannelConfigs();
+    }
+    else if (command == "respir") {
+      ads1298r.printRespirationStatus();
     }
     else if (command == "stop") {
       ads1298r.stopContinuous();
@@ -605,12 +791,22 @@ void loop() {
         Serial.println(gain);
       }
     }
+    else if (command.startsWith("resp")) {
+      // Toggle respiration on/off
+      if (command.endsWith("on")) {
+        ads1298r.enableRespiration(true);
+      } else if (command.endsWith("off")) {
+        ads1298r.enableRespiration(false);
+      }
+    }
     else if (command == "help") {
       Serial.println("\nAvailable commands:");
       Serial.println("config - Show channel configurations");
+      Serial.println("respir - Show respiration status");
       Serial.println("stop - Stop data acquisition");
       Serial.println("start - Start data acquisition");
       Serial.println("gain [ch] [gain] - Set channel gain (e.g., 'gain 1 5')");
+      Serial.println("resp on/off - Enable/disable respiration");
       Serial.println("help - Show this help");
       Serial.println();
     }
