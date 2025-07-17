@@ -1,7 +1,7 @@
 /**
  * @file main.cpp
- * @brief ADS1298R Library Usage Examples
- * 
+ * @brief ADS1298R Library - 6-Lead and 12-Lead ECG Examples
+ * @author Ashfaque Khan
  */
 
 #include <Arduino.h>
@@ -18,11 +18,43 @@
 ADS1298R ecg(ADS1298_CS_PIN, ADS1298_DRDY_PIN, ADS1298_START_PIN, 
              ADS1298_RESET_PIN, SPI_FREQ);
 
-// Select which example to run (1-6)
-#define EXAMPLE_MODE 1
+// Select ECG mode: 1 = 6-Lead, 2 = 12-Lead
+#define ECG_MODE 2
 
 // =============================================================================
-// Example 1: 6-Lead ECG Configuration
+// Lead calculation structures
+// =============================================================================
+
+struct SixLeadECG {
+    int32_t aVL;
+    int32_t aVF;
+    int32_t aVR;
+    int32_t L1;   // Lead I
+    int32_t L2;   // Lead II
+    int32_t L3;   // Lead III
+};
+
+// =============================================================================
+// Lead Calculations
+// =============================================================================;
+
+struct TwelveLeadECG {
+    int32_t aVL;
+    int32_t aVF;
+    int32_t aVR;
+    int32_t L1;   // Lead I
+    int32_t L2;   // Lead II
+    int32_t L3;   // Lead III
+    int32_t V1;   // Precordial leads
+    int32_t V2;
+    int32_t V3;
+    int32_t V4;
+    int32_t V5;
+    int32_t V6;
+};
+
+// =============================================================================
+// 6-Lead ECG Configuration
 // =============================================================================
 void configure6LeadECG() {
     // Set high resolution mode at 500 SPS
@@ -31,202 +63,259 @@ void configure6LeadECG() {
     // Set internal 2.4V reference
     ecg.setReference(ADS1298R::INTERNAL_2_4V);
     
-    // Configure channels
-    // CH1: Power down
-    ecg.setChannel(0, ADS1298R::ChannelConfig(false));
+    // Configure channels for limb leads
+    // CH1: RA (Right Arm) - reference
+    ecg.setChannel(0, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH2: Lead I (LA-RA) - Gain 6, normal electrode
+    // CH2: LA (Left Arm)
     ecg.setChannel(1, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH3: Lead II (LL-RA) - Gain 6, normal electrode
+    // CH3: LL (Left Leg)
     ecg.setChannel(2, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH4-8: Power down
+    // CH4-8: Power down unused channels
     for(int i = 3; i < 8; i++) {
         ecg.setChannel(i, ADS1298R::ChannelConfig(false));
     }
     
-    // Configure RLD (Right Leg Drive) - channels 2 and 3
-    ecg.setRLD(0x06, 0x06);  // Bits 1,2 = channels 2,3
+    // Configure RLD (Right Leg Drive) for channels 1,2,3
+    ecg.setRLD(0x07, 0x07);  // Bits 0,1,2 = channels 1,2,3
     
-    Serial.println("Configured for 6-lead ECG");
+    Serial.println("Configured for 6-lead ECG (aVL, aVF, aVR, L1, L2, L3)");
 }
 
 // =============================================================================
-// Example 2: 12-Lead ECG Configuration
+// 12-Lead ECG Configuration (Matching ADS1298R EVM Firmware)
 // =============================================================================
 void configure12LeadECG() {
     // Set high resolution mode at 1000 SPS
-    ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_2K_1K);
-    
-    // Set internal 2.4V reference
-    ecg.setReference(ADS1298R::INTERNAL_2_4V);
-    
-    // Enable WCT (Wilson Central Terminal) in CONFIG4
-    uint8_t config4 = ecg.readRegister(ADS1298R::REG_CONFIG4);
-    config4 |= 0x04;  // PD_WCT=1
-    ecg.writeRegister(ADS1298R::REG_CONFIG4, config4);
-    
-    // Configure all 8 channels
-    // CH1-6: V1-V6 precordial leads
-    for(int i = 0; i < 6; i++) {
-        ecg.setChannel(i, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
-    }
-    
-    // CH7: LA for Lead I
-    ecg.setChannel(6, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
-    
-    // CH8: LL for Lead II
-    ecg.setChannel(7, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
-    
-    // Configure WCT registers
-    ecg.writeRegister(ADS1298R::REG_WCT1, 0xC0);  // Enable WCT with CH7
-    ecg.writeRegister(ADS1298R::REG_WCT2, 0x80);  // Use CH8
-    
-    // Configure RLD for all channels
-    ecg.setRLD(0xFF, 0xFF);
-    
-    Serial.println("Configured for 12-lead ECG");
-}
-
-// =============================================================================
-// Example 3: Filtered ECG Configuration
-// =============================================================================
-void configureFilteredECG() {
-    // Start with 6-lead configuration
-    configure6LeadECG();
-    
-    // Enable filters
-    ecg.setNotchFilter(true, false);  // Enable 50Hz notch filter
-    
-    // Enable AC lead-off detection (includes high-pass filter)
-    ecg.setLeadOff(ADS1298R::LEADOFF_24NA, ADS1298R::LEADOFF_AC_QUARTER, 0x00);
-    
-    // Configure lead-off detection for channels 2,3
-    ecg.writeRegister(ADS1298R::REG_LOFF_SENSP, 0x06);  // Positive
-    ecg.writeRegister(ADS1298R::REG_LOFF_SENSN, 0x06);  // Negative
-    
-    Serial.println("Configured for filtered ECG with 50Hz notch");
-}
-
-// =============================================================================
-// Example 4: Respiration + ECG Configuration
-// =============================================================================
-void configureRespirationECG() {
-    // Set high resolution mode at 500 SPS
     ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_1K_500);
     
-    // Set internal 2.4V reference
+    // Set internal 2.4V reference with proper CONFIG3 setup
     ecg.setReference(ADS1298R::INTERNAL_2_4V);
     
-    // Configure respiration
-    ecg.setRespiration(ADS1298R::RESP_INTERNAL_32K, ADS1298R::RESP_PHASE_135);
+    // Configure CONFIG4 register for WCT operation
+    uint8_t config4 = 0x00;
+    config4 |= 0x04;  // WCT_TO_RLD=1 (connect WCT to RLD for better CMR)
+    config4 |= 0x02;  // PD_LOFF_COMP=1 (enable lead-off comparators)
+    ecg.writeRegister(ADS1298R::REG_CONFIG4, config4);
     
-    // CH1: Respiration measurement
-    ecg.setChannel(0, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_4, ADS1298R::NORMAL_ELECTRODE));
+    // Configure Wilson Central Terminal (WCT) registers
+    // Based on EVM firmware: "route CH2P, CH2M, and CH3P (RA, LA, LL) to internal buffers"
+    // From jumper configuration:
+    // - CH2+ = LA (Left Arm)  
+    // - CH2- = RA (Right Arm)
+    // - CH3+ = LL (Left Leg)
+    // WCT = (RA + LA + LL)/3
     
-    // CH2-3: ECG channels
-    ecg.setChannel(1, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
-    ecg.setChannel(2, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
+    // WCT1 Register: Configure WCTA (typically RA electrode)
+    uint8_t wct1 = 0x00;
+    wct1 |= 0x08;   // PD_WCTA=1 (power on WCTA)
+    wct1 |= 0x03;   // WCTA[2:0]=011 (CH2 negative input = RA)
+    ecg.writeRegister(ADS1298R::REG_WCT1, wct1);
     
-    // CH4-7: Power down
-    for(int i = 3; i < 7; i++) {
-        ecg.setChannel(i, ADS1298R::ChannelConfig(false));
-    }
+    // WCT2 Register: Configure WCTB (typically LA) and WCTC (typically LL)
+    uint8_t wct2 = 0x00;
+    wct2 |= 0x80;   // PD_WCTC=1 (power on WCTC)
+    wct2 |= 0x40;   // PD_WCTB=1 (power on WCTB) 
+    wct2 |= 0x10;   // WCTB[2:0]=010 (CH2 positive input = LA)
+    wct2 |= 0x04;   // WCTC[2:0]=100 (CH3 positive input = LL)
+    ecg.writeRegister(ADS1298R::REG_WCT2, wct2);
     
-    // CH8: Respiration reference
-    ecg.setChannel(7, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_4, ADS1298R::NORMAL_ELECTRODE));
+    // Configure all 8 channels according to Table 2:
     
-    // Configure RLD for ECG channels
-    ecg.setRLD(0x06, 0x06);
-    
-    Serial.println("Configured for respiration + ECG");
-}
-
-// =============================================================================
-// Example 5: High-Speed Acquisition
-// =============================================================================
-void configureHighSpeed() {
-    // Set high resolution mode at 8000 SPS
-    ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_8K_4K);
-    
-    // Set internal 2.4V reference
-    ecg.setReference(ADS1298R::INTERNAL_2_4V);
-    
-    // Configure only 2 channels for high-speed
+    // CH1: V6 = V6 - WCT (requires JP33 jumpers: V6 to CH1+, WCT to CH1-)
     ecg.setChannel(0, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
+    
+    // CH2: LEAD I = LA - RA (hardware configured: LA to CH2+, RA to CH2-)
     ecg.setChannel(1, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // Power down unused channels
-    for(int i = 2; i < 8; i++) {
-        ecg.setChannel(i, ADS1298R::ChannelConfig(false));
-    }
-    
-    // Configure RLD
-    ecg.setRLD(0x03, 0x03);
-    
-    Serial.println("Configured for high-speed acquisition (8kSPS)");
-}
-
-// =============================================================================
-// Example 6: Custom Multi-Signal Configuration
-// =============================================================================
-void configureCustom() {
-    // Set high resolution mode at 2000 SPS
-    ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_4K_2K);
-    
-    // Set internal 2.4V reference
-    ecg.setReference(ADS1298R::INTERNAL_2_4V);
-    
-    // Configure different signals with different gains
-    // CH1-2: EEG signals (high gain)
-    ecg.setChannel(0, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_12, ADS1298R::NORMAL_ELECTRODE));
-    ecg.setChannel(1, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_12, ADS1298R::NORMAL_ELECTRODE));
-    
-    // CH3-4: ECG signals (medium gain)
+    // CH3: LEAD II = LL - RA (hardware configured: LL to CH3+, RA to CH3-)
     ecg.setChannel(2, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
+    
+    // CH4: V2 = V2 - WCT (requires JP30 jumpers: V2 to CH4+, WCT to CH4-)
     ecg.setChannel(3, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH5-6: EMG signals (low gain)
-    ecg.setChannel(4, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_2, ADS1298R::NORMAL_ELECTRODE));
-    ecg.setChannel(5, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_2, ADS1298R::NORMAL_ELECTRODE));
+    // CH5: V3 = V3 - WCT (requires JP29 jumpers: V3 to CH5+, WCT to CH5-)
+    ecg.setChannel(4, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH7: Temperature monitoring
-    ecg.setChannel(6, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_1, ADS1298R::TEMPERATURE));
+    // CH6: V4 = V4 - WCT (requires JP28 jumpers: V4 to CH6+, WCT to CH6-)
+    ecg.setChannel(5, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // CH8: Supply voltage monitoring
-    ecg.setChannel(7, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_1, ADS1298R::MVDD_SUPPLY));
+    // CH7: V5 = V5 - WCT (requires JP27 jumpers: V5 to CH7+, WCT to CH7-)
+    ecg.setChannel(6, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // Configure RLD for ECG channels only
-    ecg.setRLD(0x0C, 0x0C);  // Channels 3,4
+    // CH8: V1 = V1 - WCT (requires JP26 jumpers: V1 to CH8+, WCT to CH8-)
+    ecg.setChannel(7, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
-    // Enable filters
-    ecg.setNotchFilter(false, true);  // 60Hz notch
+    // Configure RLD (Right Leg Drive) for limb leads
+    // Use channels 2,3 which contain the RA, LA, LL electrode data
+    ecg.setRLD(0x06, 0x06);  // Channels 2,3 (bits 1,2 set)
     
-    Serial.println("Configured for custom multi-signal acquisition");
+    Serial.println("Configured for 12-lead ECG with corrected WCT setup");
+    Serial.println("WARNING: Requires EVM hardware with proper jumper configuration!");
+    Serial.println("JP26-JP30: Connect WCT to CH negative inputs, V1-V5 to CH positive inputs");
+    Serial.println("JP31: RA to CH3-, LL to CH3+");
+    Serial.println("JP32: RA to CH2-, LA to CH2+");
+    Serial.println("JP33: V6 to CH1+, WCT to CH1-");
 }
 
 // =============================================================================
-// Lead Calculations
+// Register Verification Functions
 // =============================================================================
 
-struct SixLeadECG {
-    int32_t lead_I;
-    int32_t lead_II;
-    int32_t lead_III;
-    int32_t aVR;
-    int32_t aVL;
-    int32_t aVF;
-};
+void verifyRegisterConfiguration() {
+    Serial.println("\n=== Register Configuration Verification ===");
+    
+    // Read and display key registers
+    uint8_t deviceId = ecg.readRegister(ADS1298R::REG_ID);
+    uint8_t config1 = ecg.readRegister(ADS1298R::REG_CONFIG1);
+    uint8_t config2 = ecg.readRegister(ADS1298R::REG_CONFIG2);
+    uint8_t config3 = ecg.readRegister(ADS1298R::REG_CONFIG3);
+    uint8_t config4 = ecg.readRegister(ADS1298R::REG_CONFIG4);
+    uint8_t wct1 = ecg.readRegister(ADS1298R::REG_WCT1);
+    uint8_t wct2 = ecg.readRegister(ADS1298R::REG_WCT2);
+    uint8_t rldSensP = ecg.readRegister(ADS1298R::REG_RLD_SENSP);
+    uint8_t rldSensN = ecg.readRegister(ADS1298R::REG_RLD_SENSN);
+    
+    Serial.print("Device ID: 0x"); Serial.println(deviceId, HEX);
+    Serial.print("CONFIG1: 0x"); Serial.println(config1, HEX);
+    Serial.print("CONFIG2: 0x"); Serial.println(config2, HEX);
+    Serial.print("CONFIG3: 0x"); Serial.println(config3, HEX);
+    Serial.print("CONFIG4: 0x"); Serial.println(config4, HEX);
+    Serial.print("WCT1: 0x"); Serial.println(wct1, HEX);
+    Serial.print("WCT2: 0x"); Serial.println(wct2, HEX);
+    Serial.print("RLD_SENSP: 0x"); Serial.println(rldSensP, HEX);
+    Serial.print("RLD_SENSN: 0x"); Serial.println(rldSensN, HEX);
+    
+    // Display channel configurations
+    Serial.println("\nChannel Configurations:");
+    for(int i = 0; i < 8; i++) {
+        uint8_t chSet = ecg.readRegister(ADS1298R::REG_CH1SET + i);
+        Serial.print("CH"); Serial.print(i+1); 
+        Serial.print("SET: 0x"); Serial.print(chSet, HEX);
+        Serial.print(" ("); 
+        if(chSet & 0x80) {
+            Serial.print("POWERED DOWN");
+        } else {
+            Serial.print("ENABLED, GAIN=");
+            uint8_t gain = (chSet >> 4) & 0x07;
+            switch(gain) {
+                case 0: Serial.print("6"); break;
+                case 1: Serial.print("1"); break;
+                case 2: Serial.print("2"); break;
+                case 3: Serial.print("3"); break;
+                case 4: Serial.print("4"); break;
+                case 5: Serial.print("8"); break;
+                case 6: Serial.print("12"); break;
+                default: Serial.print("?"); break;
+            }
+            Serial.print(", MUX=");
+            uint8_t mux = chSet & 0x07;
+            switch(mux) {
+                case 0: Serial.print("NORMAL"); break;
+                case 1: Serial.print("SHORTED"); break;
+                case 2: Serial.print("RLD_MEAS"); break;
+                case 3: Serial.print("MVDD"); break;
+                case 4: Serial.print("TEMP"); break;
+                case 5: Serial.print("TEST"); break;
+                default: Serial.print("RESERVED"); break;
+            }
+        }
+        Serial.println(")");
+    }
+    
+    #if ECG_MODE == 2
+        // Verify WCT configuration for 12-lead mode
+        Serial.println("\nWCT Configuration Analysis:");
+        Serial.print("WCTA enabled: "); Serial.println((wct1 & 0x08) ? "YES" : "NO");
+        Serial.print("WCTB enabled: "); Serial.println((wct2 & 0x40) ? "YES" : "NO");
+        Serial.print("WCTC enabled: "); Serial.println((wct2 & 0x80) ? "YES" : "NO");
+        
+        // Decode WCTA input (should be 011 = CH2-)
+        uint8_t wcta_input = wct1 & 0x07;
+        Serial.print("WCTA input: ");
+        if(wcta_input == 0x03) Serial.println("CH2- (RA) ✓");
+        else Serial.print("UNEXPECTED: "); Serial.println(wcta_input, BIN);
+        
+        // Decode WCTB input (should be 010 = CH2+)
+        uint8_t wctb_input = (wct2 >> 3) & 0x07;
+        Serial.print("WCTB input: ");
+        if(wctb_input == 0x02) Serial.println("CH2+ (LA) ✓");
+        else Serial.print("UNEXPECTED: "); Serial.println(wctb_input, BIN);
+        
+        // Decode WCTC input (should be 100 = CH3+)
+        uint8_t wctc_input = wct2 & 0x07;
+        Serial.print("WCTC input: ");
+        if(wctc_input == 0x04) Serial.println("CH3+ (LL) ✓");
+        else Serial.print("UNEXPECTED: "); Serial.println(wctc_input, BIN);
+        
+        Serial.print("WCT to RLD: "); Serial.println((config4 & 0x04) ? "CONNECTED" : "DISCONNECTED");
+        
+        Serial.println("\nExpected WCT = (RA + LA + LL)/3 where:");
+        Serial.println("- RA comes from CH2- electrode"); 
+        Serial.println("- LA comes from CH2+ electrode");
+        Serial.println("- LL comes from CH3+ electrode");
+        
+        Serial.println("\nHardware Requirements:");
+        Serial.println("JP32: ECG_RA to CH2-, ECG_LA to CH2+");
+        Serial.println("JP31: ECG_RA to CH3-, ECG_LL to CH3+");
+        Serial.println("JP26-JP30: WCT to CH negative inputs, V1-V5 to CH positive inputs");
+        Serial.println("JP33: ECG_V6 to CH1+, WCT to CH1-");
+    #endif
+    
+    Serial.println("=== End Verification ===\n");
+}
+
+// =============================================================================
+// Lead Calculations  
+// =============================================================================
 
 SixLeadECG calculate6LeadECG(const ADS1298R::Data& data) {
     SixLeadECG leads;
-    leads.lead_I = data.channels[1];    // LA - RA
-    leads.lead_II = data.channels[2];   // LL - RA
-    leads.lead_III = leads.lead_II - leads.lead_I;
-    leads.aVR = -(leads.lead_I + leads.lead_II) / 2;
-    leads.aVL = leads.lead_I - leads.lead_II / 2;
-    leads.aVF = leads.lead_II - leads.lead_I / 2;
+    
+    // Raw electrode readings
+    int32_t RA = data.channels[0];  // Right Arm
+    int32_t LA = data.channels[1];  // Left Arm  
+    int32_t LL = data.channels[2];  // Left Leg
+    
+    // Calculate standard limb leads
+    leads.L1 = LA - RA;           // Lead I = LA - RA
+    leads.L2 = LL - RA;           // Lead II = LL - RA
+    leads.L3 = LL - LA;           // Lead III = LL - LA
+    
+    // Calculate augmented limb leads
+    leads.aVR = -(LA + LL) / 2;   // aVR = -(LA + LL)/2
+    leads.aVL = LA - (RA + LL) / 2;  // aVL = LA - (RA + LL)/2
+    leads.aVF = LL - (RA + LA) / 2;  // aVF = LL - (RA + LA)/2
+    
+    return leads;
+}
+
+TwelveLeadECG calculate12LeadECG(const ADS1298R::Data& data) {
+    TwelveLeadECG leads;
+    
+    // According to Table 2: ADS1298R Lead Measurements
+    // CH2 = LEAD I = LA - RA (computed in analog domain)
+    // CH3 = LEAD II = LL - RA (computed in analog domain)
+    leads.L1 = data.channels[1];  // Channel 2: LEAD I = LA - RA
+    leads.L2 = data.channels[2];  // Channel 3: LEAD II = LL - RA
+    
+    // According to Table 3: Derived Lead Calculations
+    leads.L3 = leads.L2 - leads.L1;           // LEAD III = LEAD II - LEAD I
+    leads.aVR = -(leads.L1 + leads.L2) / 2;   // aVR = -(LEAD I + LEAD II) / 2
+    leads.aVL = leads.L1 - leads.L2 / 2;      // aVL = LEAD I - LEAD II / 2
+    leads.aVF = leads.L2 - leads.L1 / 2;      // aVF = LEAD II - LEAD I / 2
+    
+    // Precordial leads (already computed by hardware with respect to WCT)
+    // According to Table 2 channel mapping:
+    leads.V6 = data.channels[0];  // Channel 1: V6 = V6 - WCT
+    leads.V2 = data.channels[3];  // Channel 4: V2 = V2 - WCT
+    leads.V3 = data.channels[4];  // Channel 5: V3 = V3 - WCT
+    leads.V4 = data.channels[5];  // Channel 6: V4 = V4 - WCT
+    leads.V5 = data.channels[6];  // Channel 7: V5 = V5 - WCT
+    leads.V1 = data.channels[7];  // Channel 8: V1 = V1 - WCT
+    
     return leads;
 }
 
@@ -238,7 +327,7 @@ void setup() {
     Serial.begin(115200);
     delay(3000);
     
-    Serial.println("ADS1298R Example Starting...");
+    Serial.println("ADS1298R ECG Monitor Starting...");
     
     // Initialize the device
     if (!ecg.begin()) {
@@ -250,27 +339,29 @@ void setup() {
     Serial.print("Device ID: 0x");
     Serial.println(ecg.getDeviceID(), HEX);
     
-    // Configure based on selected example
-    #if EXAMPLE_MODE == 1
+    // Configure based on selected mode
+    #if ECG_MODE == 1
         configure6LeadECG();
-    #elif EXAMPLE_MODE == 2
+    #elif ECG_MODE == 2
         configure12LeadECG();
-    #elif EXAMPLE_MODE == 3
-        configureFilteredECG();
-    #elif EXAMPLE_MODE == 4
-        configureRespirationECG();
-    #elif EXAMPLE_MODE == 5
-        configureHighSpeed();
-    #elif EXAMPLE_MODE == 6
-        configureCustom();
     #endif
-    
-    // Optional: Set test signal for verification
-    // ecg.setTestSignal(ADS1298R::TEST_1MV_FAST);
     
     // Start data acquisition
     ecg.startAcquisition();
     Serial.println("Acquisition started!\n");
+    
+    #if ECG_MODE == 2
+        Serial.println("⚠️ IMPORTANT: V1-V6 leads require proper hardware setup!");
+        Serial.println("If V1-V6 show poor/incorrect data, check jumper configurations.");
+        Serial.println("Use 'v' command to verify register settings match expected values.");
+    #endif
+    
+    // Print header based on mode
+    #if ECG_MODE == 1
+        Serial.println("Format: aVL:<value>,aVF:<value>,aVR:<value>,L1:<value>,L2:<value>,L3:<value>");
+    #elif ECG_MODE == 2
+        Serial.println("Format: aVL:<value>,aVF:<value>,aVR:<value>,L1:<value>,L2:<value>,L3:<value>,V1:<value>,V2:<value>,V3:<value>,V4:<value>,V5:<value>,V6:<value>");
+    #endif
 }
 
 // =============================================================================
@@ -283,80 +374,37 @@ void loop() {
         ADS1298R::Data data;
         
         if (ecg.readData(data)) {
-            #if EXAMPLE_MODE == 1 || EXAMPLE_MODE == 3
+            #if ECG_MODE == 1
                 // 6-lead ECG output
                 SixLeadECG leads = calculate6LeadECG(data);
                 
                 Serial.print(">");
-                Serial.print("I:"); Serial.print(leads.lead_I);
-                Serial.print(",II:"); Serial.print(leads.lead_II);
-                Serial.print(",III:"); Serial.print(leads.lead_III);
-                Serial.print(",aVR:"); Serial.print(leads.aVR);
-                Serial.print(",aVL:"); Serial.print(leads.aVL);
-                Serial.print(",aVF:"); Serial.print(leads.aVF);
+                Serial.print("aVL:"); Serial.print(leads.aVL); Serial.print(",");
+                Serial.print("aVF:"); Serial.print(leads.aVF); Serial.print(",");
+                Serial.print("aVR:"); Serial.print(leads.aVR); Serial.print(",");
+                Serial.print("L1:"); Serial.print(leads.L1); Serial.print(",");
+                Serial.print("L2:"); Serial.print(leads.L2); Serial.print(",");
+                Serial.print("L3:"); Serial.print(leads.L3);
                 Serial.println();
                 
-            #elif EXAMPLE_MODE == 2
+            #elif ECG_MODE == 2
                 // 12-lead ECG output
+                TwelveLeadECG leads = calculate12LeadECG(data);
+                
                 Serial.print(">");
-                for(int i = 0; i < 8; i++) {
-                    Serial.print("CH"); Serial.print(i+1);
-                    Serial.print(":"); Serial.print(data.channels[i]);
-                    if(i < 7) Serial.print(",");
-                }
+                Serial.print("aVL:"); Serial.print(leads.aVL); Serial.print(",");
+                Serial.print("aVF:"); Serial.print(leads.aVF); Serial.print(",");
+                Serial.print("aVR:"); Serial.print(leads.aVR); Serial.print(",");
+                Serial.print("L1:"); Serial.print(leads.L1); Serial.print(",");
+                Serial.print("L2:"); Serial.print(leads.L2); Serial.print(",");
+                Serial.print("L3:"); Serial.print(leads.L3); Serial.print(",");
+                Serial.print("V1:"); Serial.print(leads.V1); Serial.print(",");
+                Serial.print("V2:"); Serial.print(leads.V2); Serial.print(",");
+                Serial.print("V3:"); Serial.print(leads.V3); Serial.print(",");
+                Serial.print("V4:"); Serial.print(leads.V4); Serial.print(",");
+                Serial.print("V5:"); Serial.print(leads.V5); Serial.print(",");
+                Serial.print("V6:"); Serial.print(leads.V6);
                 Serial.println();
-                
-            #elif EXAMPLE_MODE == 4
-                // Respiration + ECG
-                Serial.print(">");
-                Serial.print("RESP:"); Serial.print(data.channels[0]);
-                Serial.print(",ECG1:"); Serial.print(data.channels[1]);
-                Serial.print(",ECG2:"); Serial.print(data.channels[2]);
-                Serial.println();
-                
-            #elif EXAMPLE_MODE == 5
-                // High-speed raw data
-                Serial.print(data.channels[0]);
-                Serial.print(",");
-                Serial.println(data.channels[1]);
-                
-            #elif EXAMPLE_MODE == 6
-                // Custom multi-signal with conversions
-                Serial.print(">");
-                Serial.print("EEG1:"); 
-                Serial.print(ADS1298R::toMicrovolts(data.channels[0], ADS1298R::GAIN_12), 1);
-                Serial.print("uV,EEG2:");
-                Serial.print(ADS1298R::toMicrovolts(data.channels[1], ADS1298R::GAIN_12), 1);
-                Serial.print("uV,ECG1:");
-                Serial.print(ADS1298R::toMillivolts(data.channels[2], ADS1298R::GAIN_6), 2);
-                Serial.print("mV,ECG2:");
-                Serial.print(ADS1298R::toMillivolts(data.channels[3], ADS1298R::GAIN_6), 2);
-                Serial.print("mV,EMG1:");
-                Serial.print(ADS1298R::toMillivolts(data.channels[4], ADS1298R::GAIN_2), 2);
-                Serial.print("mV,EMG2:");
-                Serial.print(ADS1298R::toMillivolts(data.channels[5], ADS1298R::GAIN_2), 2);
-                Serial.print("mV,TEMP:");
-                
-                // Calculate temperature from channel 7
-                float temp_uV = ADS1298R::toMicrovolts(data.channels[6], ADS1298R::GAIN_1);
-                float temp_C = ((temp_uV - 145300.0f) / 490.0f) + 25.0f;
-                Serial.print(temp_C, 1);
-                Serial.print("C,VDD:");
-                
-                // Supply voltage from channel 8 (divided by 4 internally)
-                float vdd = ADS1298R::toVoltage(data.channels[7], ADS1298R::GAIN_1) * 4.0f;
-                Serial.print(vdd, 2);
-                Serial.println("V");
-            #endif
-            
-            // Check lead-off status (if configured)
-            #if EXAMPLE_MODE == 3
-                for(int i = 0; i < 8; i++) {
-                    if(data.leadOffStatus[i]) {
-                        Serial.print("!!! Lead-off detected on channel ");
-                        Serial.println(i + 1);
-                    }
-                }
             #endif
         }
     }
@@ -381,6 +429,11 @@ void loop() {
                 Serial.println(ecg.getDeviceID(), HEX);
                 Serial.print("Acquiring: ");
                 Serial.println(ecg.isAcquiring() ? "Yes" : "No");
+                #if ECG_MODE == 1
+                    Serial.println("Mode: 6-Lead ECG");
+                #elif ECG_MODE == 2
+                    Serial.println("Mode: 12-Lead ECG");
+                #endif
                 break;
                 
             case 't':  // Test signal toggle
@@ -391,13 +444,45 @@ void loop() {
                 Serial.println(testEnabled ? "ON" : "OFF");
                 break;
                 
+            case 'v':  // Verify configuration
+                verifyRegisterConfiguration();
+                break;
+                
+            case 'd':  // Debug mode - show raw channel data
+                Serial.println("\nDEBUG: Raw Channel Data");
+                if (ecg.isDataReady()) {
+                    ADS1298R::Data debugData;
+                    if (ecg.readData(debugData)) {
+                        for(int i = 0; i < 8; i++) {
+                            Serial.print("CH"); Serial.print(i+1); 
+                            Serial.print(": "); Serial.print(debugData.channels[i]);
+                            Serial.print(" (0x"); Serial.print(debugData.channels[i], HEX);
+                            Serial.println(")");
+                        }
+                        Serial.print("Status: 0x"); Serial.println(debugData.status, HEX);
+                    }
+                } else {
+                    Serial.println("No data ready");
+                }
+                break;
+                
             case '?':  // Help
                 Serial.println("\n=== Commands ===");
                 Serial.println("s - Stop acquisition");
                 Serial.println("r - Resume acquisition");
                 Serial.println("i - Device info");
                 Serial.println("t - Toggle test signal");
+                Serial.println("v - Verify register configuration");
+                Serial.println("d - Debug: show raw channel data");
                 Serial.println("? - Help");
+                #if ECG_MODE == 1
+                    Serial.println("\nMode: 6-Lead ECG");
+                    Serial.println("Output: aVL:<value>,aVF:<value>,aVR:<value>,L1:<value>,L2:<value>,L3:<value>");
+                #elif ECG_MODE == 2
+                    Serial.println("\nMode: 12-Lead ECG"); 
+                    Serial.println("Output: aVL:<value>,aVF:<value>,aVR:<value>,L1:<value>,L2:<value>,L3:<value>,V1:<value>,V2:<value>,V3:<value>,V4:<value>,V5:<value>,V6:<value>");
+                    Serial.println("Note: V1-V6 require proper EVM jumper configuration for accurate readings");
+                #endif
                 break;
         }
     }
