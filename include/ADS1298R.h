@@ -11,33 +11,29 @@
 
 class ADS1298R {
 public:
-    // =============================================================================
-    // ENUMERATIONS
-    // =============================================================================
-    
     enum PowerMode {
         LOW_POWER = 0,
         HIGH_RESOLUTION = 1
     };
     
     enum DataRate {
-        RATE_32K_16K = 0,   // HR: 32kSPS, LP: 16kSPS
-        RATE_16K_8K = 1,    // HR: 16kSPS, LP: 8kSPS
-        RATE_8K_4K = 2,     // HR: 8kSPS,  LP: 4kSPS
-        RATE_4K_2K = 3,     // HR: 4kSPS,  LP: 2kSPS
-        RATE_2K_1K = 4,     // HR: 2kSPS,  LP: 1kSPS
-        RATE_1K_500 = 5,    // HR: 1kSPS,  LP: 500SPS
-        RATE_500_250 = 6    // HR: 500SPS, LP: 250SPS
+        RATE_32K_16K = 0,
+        RATE_16K_8K = 1,
+        RATE_8K_4K = 2,
+        RATE_4K_2K = 3,
+        RATE_2K_1K = 4,
+        RATE_1K_500 = 5,
+        RATE_500_250 = 6
     };
     
     enum Gain {
-        GAIN_1 = 0x10,      // ±2.4V range
-        GAIN_2 = 0x20,      // ±1.2V range
-        GAIN_3 = 0x30,      // ±800mV range
-        GAIN_4 = 0x40,      // ±600mV range
-        GAIN_6 = 0x00,      // ±400mV range (typical ECG)
-        GAIN_8 = 0x50,      // ±300mV range
-        GAIN_12 = 0x60      // ±200mV range
+        GAIN_1 = 0x10,
+        GAIN_2 = 0x20,
+        GAIN_3 = 0x30,
+        GAIN_4 = 0x40,
+        GAIN_6 = 0x00,
+        GAIN_8 = 0x50,
+        GAIN_12 = 0x60
     };
     
     enum InputMux {
@@ -75,26 +71,9 @@ public:
     
     enum LeadOffFrequency {
         LEADOFF_DC = 0x00,
-        LEADOFF_AC_QUARTER = 0x01,  // fDR/4
-        LEADOFF_AC_HALF = 0x02,     // fDR/2
-        LEADOFF_AC_DR = 0x03        // fDR
-    };
-    
-    enum RespirationMode {
-        RESP_DISABLED = 0x00,
-        RESP_EXTERNAL = 0x01,
-        RESP_INTERNAL_32K = 0x02,
-        RESP_INTERNAL_64K = 0x03
-    };
-    
-    enum RespirationPhase {
-        RESP_PHASE_22_5 = 0x00,
-        RESP_PHASE_45 = 0x01,
-        RESP_PHASE_67_5 = 0x02,
-        RESP_PHASE_90 = 0x03,
-        RESP_PHASE_112_5 = 0x04,
-        RESP_PHASE_135 = 0x05,
-        RESP_PHASE_157_5 = 0x06
+        LEADOFF_AC_QUARTER = 0x01,
+        LEADOFF_AC_HALF = 0x02,
+        LEADOFF_AC_DR = 0x03
     };
     
     enum ErrorCode {
@@ -109,10 +88,6 @@ public:
         ERR_REGISTER_VERIFY_FAILED
     };
 
-    // =============================================================================
-    // DATA STRUCTURES
-    // =============================================================================
-    
     struct Data {
         uint32_t status;
         int32_t channels[8];
@@ -140,10 +115,6 @@ public:
             : enabled(en), gain(g), input(inp) {}
     };
 
-    // =============================================================================
-    // REGISTER ADDRESSES
-    // =============================================================================
-    
     static const uint8_t REG_ID = 0x00;
     static const uint8_t REG_CONFIG1 = 0x01;
     static const uint8_t REG_CONFIG2 = 0x02;
@@ -172,21 +143,15 @@ public:
     static const uint8_t REG_WCT2 = 0x19;
 
 private:
-    // Hardware pins
     uint8_t pinCS, pinDRDY, pinSTART, pinRESET;
     uint32_t spiFrequency;
-    
-    // State
     bool initialized;
     bool acquiring;
     volatile bool dataReady;
     volatile bool dataOverrun;
     ErrorCode lastError;
-    
-    // Static instance for interrupt
     static ADS1298R* instance;
     
-    // Commands
     static const uint8_t CMD_WAKEUP = 0x02;
     static const uint8_t CMD_STANDBY = 0x04;
     static const uint8_t CMD_RESET = 0x06;
@@ -198,43 +163,36 @@ private:
     static const uint8_t CMD_WREG = 0x40;
 
 public:
-    // =============================================================================
-    // PUBLIC METHODS
-    // =============================================================================
-    
-    // Constructor
     ADS1298R(uint8_t cs, uint8_t drdy, uint8_t start, uint8_t reset, uint32_t spiFreq = 1000000);
     
-    // Basic operations
     bool begin();
     bool startAcquisition();
     bool stopAcquisition();
     bool isDataReady();
     bool readData(Data& data);
+    bool readDataWithQualityCheck(Data& data);
     
-    // Register access
     void writeRegister(uint8_t address, uint8_t value);
     uint8_t readRegister(uint8_t address);
     
-    // Configuration helpers
     void setPowerMode(PowerMode mode, DataRate rate);
     void setChannel(uint8_t channel, const ChannelConfig& config);
     void setReference(ReferenceVoltage ref);
     void setTestSignal(TestSignal mode);
     void setRLD(uint8_t positiveMask, uint8_t negativeMask);
     void setLeadOff(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold = 0x00);
-    void setRespiration(RespirationMode mode, RespirationPhase phase);
     void setNotchFilter(bool enable50Hz, bool enable60Hz);
     void setGPIO(uint8_t direction, uint8_t data);
     uint8_t readGPIO();
     
-    // Utility
+    bool configureWCTOptimized(bool enableChop = true);
+    void diagnoseV6Channel();
+    
     void reset();
     uint8_t getDeviceID();
     bool isAcquiring() const { return acquiring; }
     ErrorCode getLastError() const { return lastError; }
     
-    // Data conversion
     static float toVoltage(int32_t raw, Gain gain, float vref = 2.4f);
     static float toMillivolts(int32_t raw, Gain gain, float vref = 2.4f);
     static float toMicrovolts(int32_t raw, Gain gain, float vref = 2.4f);
@@ -242,7 +200,6 @@ public:
     static const char* getErrorString(ErrorCode error);
 
 private:
-    // Internal methods
     void sendCommand(uint8_t command);
     void updateLeadOffStatus(Data& data);
     static void handleInterrupt();

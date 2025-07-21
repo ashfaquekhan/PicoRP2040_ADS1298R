@@ -1,17 +1,12 @@
+#include "ADS1298R.h"
+
 /**
  * @file ADS1298R.cpp
  * @brief Y3X ADS1298R Library Implementation
  * @author Ashfaque Khan
  */
 
-#include "ADS1298R.h"
-
-// Static member initialization
 ADS1298R* ADS1298R::instance = nullptr;
-
-// =============================================================================
-// CONSTRUCTOR
-// =============================================================================
 
 ADS1298R::ADS1298R(uint8_t cs, uint8_t drdy, uint8_t start, uint8_t reset, uint32_t spiFreq) {
     pinCS = cs;
@@ -29,12 +24,7 @@ ADS1298R::ADS1298R(uint8_t cs, uint8_t drdy, uint8_t start, uint8_t reset, uint3
     instance = this;
 }
 
-// =============================================================================
-// BASIC OPERATIONS
-// =============================================================================
-
 bool ADS1298R::begin() {
-    // Configure pins
     pinMode(pinDRDY, INPUT);
     pinMode(pinCS, OUTPUT);
     pinMode(pinSTART, OUTPUT);
@@ -44,32 +34,27 @@ bool ADS1298R::begin() {
     digitalWrite(pinSTART, LOW);
     digitalWrite(pinRESET, HIGH);
     
-    // Initialize SPI
     if (!PicoSPI0.configure(2, 3, 4, 5, spiFrequency, 1, false)) {
         lastError = ERR_SPI_INIT_FAILED;
         return false;
     }
     
-    // Hardware reset
     digitalWrite(pinRESET, LOW);
     delay(10);
     digitalWrite(pinRESET, HIGH);
     delay(100);
     
-    // Stop continuous data mode
     PicoSPI0.beginTransaction();
     PicoSPI0.transfer(CMD_SDATAC);
     PicoSPI0.endTransaction();
     delay(10);
     
-    // Verify device ID
     uint8_t deviceId = getDeviceID();
     if ((deviceId & 0xF0) != 0xD0) {
         lastError = ERR_INVALID_DEVICE_ID;
         return false;
     }
     
-    // Setup interrupt
     attachInterrupt(digitalPinToInterrupt(pinDRDY), handleInterrupt, FALLING);
     
     initialized = true;
@@ -91,13 +76,11 @@ bool ADS1298R::startAcquisition() {
     dataReady = false;
     dataOverrun = false;
     
-    // Start continuous data mode
     PicoSPI0.beginTransaction();
     PicoSPI0.transfer(CMD_RDATAC);
     PicoSPI0.endTransaction();
     delay(10);
     
-    // Start conversions
     digitalWrite(pinSTART, HIGH);
     
     PicoSPI0.beginTransaction();
@@ -149,13 +132,11 @@ bool ADS1298R::readData(Data& data) {
     
     PicoSPI0.beginTransaction();
     
-    // Read status (3 bytes)
     data.status = 0;
     for (int i = 0; i < 3; i++) {
         data.status = (data.status << 8) | PicoSPI0.transfer(0x00);
     }
     
-    // Read channel data (3 bytes each)
     for (int i = 0; i < 8; i++) {
         data.channels[i] = 0;
         for (int j = 0; j < 3; j++) {
@@ -163,7 +144,6 @@ bool ADS1298R::readData(Data& data) {
             data.channels[i] = (data.channels[i] << 8) | byte;
         }
         
-        // Sign extend 24-bit to 32-bit
         if (data.channels[i] & 0x800000) {
             data.channels[i] |= 0xFF000000;
         }
@@ -171,7 +151,6 @@ bool ADS1298R::readData(Data& data) {
     
     PicoSPI0.endTransaction();
     
-    // Update lead-off status
     updateLeadOffStatus(data);
     
     data.timestamp = micros();
@@ -181,9 +160,20 @@ bool ADS1298R::readData(Data& data) {
     return true;
 }
 
-// =============================================================================
-// REGISTER ACCESS
-// =============================================================================
+bool ADS1298R::readDataWithQualityCheck(Data& data) {
+    if (!readData(data)) {
+        return false;
+    }
+    
+    uint8_t loffStatP = readRegister(REG_LOFF_STATP);
+    uint8_t loffStatN = readRegister(REG_LOFF_STATN);
+    
+    for (int i = 0; i < 8; i++) {
+        data.leadOffStatus[i] = (loffStatP & (1 << i)) || (loffStatN & (1 << i));
+    }
+    
+    return true;
+}
 
 void ADS1298R::writeRegister(uint8_t address, uint8_t value) {
     PicoSPI0.beginTransaction();
@@ -203,10 +193,6 @@ uint8_t ADS1298R::readRegister(uint8_t address) {
     return value;
 }
 
-// =============================================================================
-// CONFIGURATION HELPERS
-// =============================================================================
-
 void ADS1298R::setPowerMode(PowerMode mode, DataRate rate) {
     uint8_t config1 = (uint8_t)rate;
     if (mode == HIGH_RESOLUTION) {
@@ -223,7 +209,7 @@ void ADS1298R::setChannel(uint8_t channel, const ChannelConfig& config) {
     
     uint8_t chReg = 0;
     if (!config.enabled) {
-        chReg |= 0x80;  // Power down
+        chReg |= 0x80;
     }
     chReg |= (uint8_t)config.gain;
     chReg |= (uint8_t)config.input;
@@ -232,19 +218,18 @@ void ADS1298R::setChannel(uint8_t channel, const ChannelConfig& config) {
 }
 
 void ADS1298R::setReference(ReferenceVoltage ref) {
-    uint8_t config3 = 0x80;  // PD_REFBUF=1
-    config3 |= 0x40;         // Reserved=1
+    uint8_t config3 = 0x80;
+    config3 |= 0x40;
     
     if (ref == INTERNAL_4V) {
-        config3 |= 0x20;     // VREF_4V=1
+        config3 |= 0x20;
     }
     
-    config3 |= 0x08;         // RLDREF_INT=1
-    config3 |= 0x04;         // PD_RLD=1
+    config3 |= 0x08;
+    config3 |= 0x04;
     
     writeRegister(REG_CONFIG3, config3);
     
-    // Wait for reference to settle
     if (ref != EXTERNAL_REF) {
         delay(150);
     }
@@ -252,10 +237,10 @@ void ADS1298R::setReference(ReferenceVoltage ref) {
 
 void ADS1298R::setTestSignal(TestSignal mode) {
     uint8_t config2 = readRegister(REG_CONFIG2);
-    config2 &= 0xF0;  // Clear test signal bits
+    config2 &= 0xF0;
     
     if (mode != TEST_DISABLED) {
-        config2 |= 0x10;  // INT_TEST=1
+        config2 |= 0x10;
         config2 |= (uint8_t)mode;
     }
     
@@ -268,52 +253,19 @@ void ADS1298R::setRLD(uint8_t positiveMask, uint8_t negativeMask) {
 }
 
 void ADS1298R::setLeadOff(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold) {
-    uint8_t loff = threshold;  // Bits 7-5: threshold
-    loff |= (uint8_t)current;  // Bits 4-2: current
-    loff |= (uint8_t)freq;     // Bits 1-0: frequency
+    uint8_t loff = threshold;
+    loff |= (uint8_t)current;
+    loff |= (uint8_t)freq;
     writeRegister(REG_LOFF, loff);
     
-    // Enable lead-off comparator in CONFIG4
     uint8_t config4 = readRegister(REG_CONFIG4);
-    config4 |= 0x02;  // PD_LOFF_COMP=1
+    config4 |= 0x02;
     writeRegister(REG_CONFIG4, config4);
-}
-
-void ADS1298R::setRespiration(RespirationMode mode, RespirationPhase phase) {
-    if (mode == RESP_DISABLED) {
-        writeRegister(REG_RESP, 0x20);  // Disable respiration
-        return;
-    }
-    
-    // Build RESP register value
-    uint8_t resp = 0x20;  // Reserved bit
-    
-    if (mode == RESP_INTERNAL_32K || mode == RESP_INTERNAL_64K) {
-        resp |= 0xC0;  // Enable modulation and demodulation
-        resp |= ((uint8_t)phase << 2);  // Phase bits
-        resp |= (mode & 0x03);  // Control bits
-    } else {
-        resp |= 0x01;  // External respiration
-        resp |= ((uint8_t)phase << 2);  // Phase bits
-    }
-    
-    writeRegister(REG_RESP, resp);
-    
-    // Set respiration frequency in CONFIG4
-    if (mode == RESP_INTERNAL_32K) {
-        uint8_t config4 = readRegister(REG_CONFIG4);
-        config4 = (config4 & 0x1F) | 0x20;  // 32kHz
-        writeRegister(REG_CONFIG4, config4);
-    } else if (mode == RESP_INTERNAL_64K) {
-        uint8_t config4 = readRegister(REG_CONFIG4);
-        config4 = (config4 & 0x1F);  // 64kHz
-        writeRegister(REG_CONFIG4, config4);
-    }
 }
 
 void ADS1298R::setNotchFilter(bool enable50Hz, bool enable60Hz) {
     uint8_t config2 = readRegister(REG_CONFIG2);
-    config2 &= 0xFC;  // Clear filter bits
+    config2 &= 0xFC;
     
     if (enable50Hz && enable60Hz) {
         config2 |= 0x03;
@@ -335,9 +287,105 @@ uint8_t ADS1298R::readGPIO() {
     return readRegister(REG_GPIO) & 0x0F;
 }
 
-// =============================================================================
-// UTILITY
-// =============================================================================
+bool ADS1298R::configureWCTOptimized(bool enableChop) {
+    if (!initialized) {
+        lastError = ERR_NOT_INITIALIZED;
+        return false;
+    }
+    
+    uint8_t config2 = readRegister(REG_CONFIG2);
+    if (enableChop) {
+        config2 |= 0x80;
+    } else {
+        config2 &= ~0x80;
+    }
+    config2 &= ~0x10;
+    writeRegister(REG_CONFIG2, config2);
+    delay(10);
+    
+    uint8_t wct1_target = 0x0B;
+    writeRegister(REG_WCT1, wct1_target);
+    delay(5);
+    
+    uint8_t wct1_verify = readRegister(REG_WCT1);
+    if (wct1_verify != wct1_target) {
+        lastError = ERR_REGISTER_VERIFY_FAILED;
+        return false;
+    }
+    
+    uint8_t wct2_target = 0xD4;
+    writeRegister(REG_WCT2, wct2_target);
+    delay(5);
+    
+    uint8_t wct2_verify = readRegister(REG_WCT2);
+    if (wct2_verify != wct2_target) {
+        lastError = ERR_REGISTER_VERIFY_FAILED;
+        return false;
+    }
+    
+    uint8_t config4 = readRegister(REG_CONFIG4);
+    config4 |= 0x04;
+    config4 |= 0x02;
+    writeRegister(REG_CONFIG4, config4);
+    
+    delay(100);
+    
+    uint8_t config4_verify = readRegister(REG_CONFIG4);
+    if ((config4_verify & 0x06) != 0x06) {
+        lastError = ERR_REGISTER_VERIFY_FAILED;
+        return false;
+    }
+    
+    uint8_t loffSensP = 0xF9;
+    uint8_t loffSensN = 0xF9;
+    writeRegister(REG_LOFF_SENSP, loffSensP);
+    writeRegister(REG_LOFF_SENSN, loffSensN);
+    
+    lastError = ERR_NONE;
+    return true;
+}
+
+void ADS1298R::diagnoseV6Channel() {
+    Serial.println("\n=== V6 Channel Diagnostics ===");
+    
+    uint8_t wct1 = readRegister(REG_WCT1);
+    uint8_t wct2 = readRegister(REG_WCT2);
+    uint8_t config4 = readRegister(REG_CONFIG4);
+    uint8_t ch1set = readRegister(REG_CH1SET);
+    
+    Serial.print("WCT1: 0x"); Serial.print(wct1, HEX);
+    Serial.print(" - WCTA: "); Serial.println((wct1 & 0x08) ? "ON" : "OFF");
+    
+    Serial.print("WCT2: 0x"); Serial.print(wct2, HEX);
+    Serial.print(" - WCTB: "); Serial.print((wct2 & 0x40) ? "ON" : "OFF");
+    Serial.print(", WCTC: "); Serial.println((wct2 & 0x80) ? "ON" : "OFF");
+    
+    Serial.print("CONFIG4: 0x"); Serial.print(config4, HEX);
+    Serial.print(" - WCT_TO_RLD: "); Serial.println((config4 & 0x04) ? "ON" : "OFF");
+    
+    Serial.print("CH1SET: 0x"); Serial.print(ch1set, HEX);
+    Serial.print(" - V6 Channel: "); Serial.println((ch1set & 0x80) ? "DISABLED" : "ENABLED");
+    
+    uint8_t loffStatP = readRegister(REG_LOFF_STATP);
+    uint8_t loffStatN = readRegister(REG_LOFF_STATN);
+    Serial.print("V6 Lead-off: P="); Serial.print((loffStatP & 0x01) ? "OFF" : "OK");
+    Serial.print(", N="); Serial.println((loffStatN & 0x01) ? "OFF" : "OK");
+    
+    Serial.println("Testing V6 with 1mV test signal...");
+    setTestSignal(TEST_1MV_FAST);
+    delay(100);
+    
+    if (isDataReady()) {
+        Data testData;
+        if (readData(testData)) {
+            Serial.print("V6 test amplitude: "); Serial.println(testData.channels[0]);
+            Serial.println("Expected: ~8388 counts for 1mV@gain=6");
+        }
+    }
+    
+    setTestSignal(TEST_DISABLED);
+    Serial.println("=== End V6 Diagnostics ===\n");
+}
 
 void ADS1298R::reset() {
     PicoSPI0.beginTransaction();
@@ -353,7 +401,7 @@ uint8_t ADS1298R::getDeviceID() {
 float ADS1298R::toVoltage(int32_t raw, Gain gain, float vref) {
     int gainValue = getGainValue(gain);
     float fullScale = vref / gainValue;
-    return (raw * fullScale) / 8388608.0f;  // 2^23
+    return (raw * fullScale) / 8388608.0f;
 }
 
 float ADS1298R::toMillivolts(int32_t raw, Gain gain, float vref) {
@@ -384,10 +432,6 @@ const char* ADS1298R::getErrorString(ErrorCode error) {
         default: return "Unknown error";
     }
 }
-
-// =============================================================================
-// PRIVATE METHODS
-// =============================================================================
 
 void ADS1298R::sendCommand(uint8_t command) {
     PicoSPI0.beginTransaction();
