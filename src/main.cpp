@@ -3,6 +3,7 @@
  * @brief ADS1298R Library - 6-Lead and 12-Lead ECG Examples
  * @author Ashfaque Khan
  */
+
 #include <Arduino.h>
 #include "ADS1298R.h"
 
@@ -29,74 +30,58 @@ void configure6LeadECG() {
     ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_1K_500);
     ecg.setReference(ADS1298R::INTERNAL_2_4V);
     
+    // Configure channels for limb leads
     ecg.setChannel(0, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     ecg.setChannel(1, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     ecg.setChannel(2, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     
+    // Power down unused channels
     for(int i = 3; i < 8; i++) {
         ecg.setChannel(i, ADS1298R::ChannelConfig(false));
     }
     
+    // Configure RLD for limb leads
     ecg.setRLD(0x07, 0x07);
     
-    Serial.println("✓ Configured for 6-lead ECG");
+    // Enable lead-off detection for active channels
+    for(int i = 0; i < 3; i++) {
+        ecg.enableLeadOff(i, true, true);
+    }
+    
+    Serial.println("Configured for 6-lead ECG with lead-off detection");
 }
 
 void configure12LeadECG() {
-    ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_1K_500);
+    // Use 8kSPS for pace detection (minimum required)
+    ecg.setPowerMode(ADS1298R::HIGH_RESOLUTION, ADS1298R::RATE_8K_4K);
     ecg.setReference(ADS1298R::INTERNAL_2_4V);
     delay(150);
     
+    // Enable notch filters for better V-lead quality
     ecg.setNotchFilter(true, true);
     
-    if (!ecg.configureWCTOptimized(true)) {
-        Serial.print("ERROR: WCT configuration failed - ");
-        Serial.println(ADS1298R::getErrorString(ecg.getLastError()));
-    }
+    // Configure optimized WCT for precordial leads
+    ecg.configureWCTOptimized(true);
     
+    // Configure all 8 channels
     for(int i = 0; i < 8; i++) {
         ecg.setChannel(i, ADS1298R::ChannelConfig(true, ADS1298R::GAIN_6, ADS1298R::NORMAL_ELECTRODE));
     }
     
+    // Configure RLD for limb leads (channels 2,3)
     ecg.setRLD(0x06, 0x06);
     
-    ecg.setLeadOff(ADS1298R::LEADOFF_6NA, ADS1298R::LEADOFF_DC, 0x60);
+    // Enable lead-off detection for all channels
+    for(int i = 0; i < 8; i++) {
+        ecg.enableLeadOff(i, true, true);
+    }
     
-    Serial.println("✓ Configured for 12-lead ECG with V6 optimizations");
-    Serial.println("⚠ CRITICAL: Verify JP16 jumper is installed on EVM!");
-}
-
-void verifyConfiguration() {
-    Serial.println("\n=== Configuration Verification ===");
+    // Configure pace detection for Lead II (CH3) and V1 (CH8)
+    ecg.configurePace(ADS1298R::PACE_CH3, ADS1298R::PACE_CH8);
+    ecg.enablePace(true);
     
-    uint8_t deviceId = ecg.readRegister(ADS1298R::REG_ID);
-    uint8_t config1 = ecg.readRegister(ADS1298R::REG_CONFIG1);
-    uint8_t config2 = ecg.readRegister(ADS1298R::REG_CONFIG2);
-    uint8_t config4 = ecg.readRegister(ADS1298R::REG_CONFIG4);
-    uint8_t wct1 = ecg.readRegister(ADS1298R::REG_WCT1);
-    uint8_t wct2 = ecg.readRegister(ADS1298R::REG_WCT2);
-    
-    Serial.print("Device ID: 0x"); Serial.println(deviceId, HEX);
-    Serial.print("CONFIG1: 0x"); Serial.println(config1, HEX);
-    Serial.print("CONFIG2: 0x"); Serial.print(config2, HEX);
-    Serial.print(" (WCT_CHOP="); Serial.print((config2 & 0x80) ? "ON" : "OFF");
-    Serial.print(", Notch="); Serial.print(config2 & 0x03, BIN); Serial.println(")");
-    Serial.print("CONFIG4: 0x"); Serial.print(config4, HEX);
-    Serial.print(" (WCT_TO_RLD="); Serial.print((config4 & 0x04) ? "ON" : "OFF"); Serial.println(")");
-    
-    #if ECG_MODE == 2
-        Serial.print("WCT1: 0x"); Serial.println(wct1, HEX);
-        Serial.print("WCT2: 0x"); Serial.println(wct2, HEX);
-        
-        bool wctOK = (wct1 == 0x0B) && (wct2 == 0xD4) && (config4 & 0x04);
-        Serial.print("WCT Configuration: "); Serial.println(wctOK ? "✓ OK" : "✗ FAIL");
-        
-        if (!wctOK) {
-            Serial.println("Expected: WCT1=0x0B, WCT2=0xD4, CONFIG4 bit 2=1");
-        }
-    #endif
-    
-    Serial.println("=== End Verification ===\n");
+    Serial.println("Configured for 12-lead ECG with lead-off and pace detection");
+    Serial.println("Sample rate: 8kSPS (required for pace detection)");
 }
 
 SixLeadECG calculate6LeadECG(const ADS1298R::Data& data) {
@@ -120,28 +105,67 @@ SixLeadECG calculate6LeadECG(const ADS1298R::Data& data) {
 TwelveLeadECG calculate12LeadECG(const ADS1298R::Data& data) {
     TwelveLeadECG leads;
     
-    leads.L1 = data.channels[1];
-    leads.L2 = data.channels[2];
+    // Limb leads (computed in analog domain by hardware)
+    leads.L1 = data.channels[1];  // CH2: LA - RA
+    leads.L2 = data.channels[2];  // CH3: LL - RA
+    
+    // Derived limb leads (computed digitally)
     leads.L3 = leads.L2 - leads.L1;
     leads.aVR = -(leads.L1 + leads.L2) / 2;
     leads.aVL = leads.L1 - leads.L2 / 2;
     leads.aVF = leads.L2 - leads.L1 / 2;
     
-    leads.V6 = data.channels[0];
-    leads.V2 = data.channels[3];
-    leads.V3 = data.channels[4];
-    leads.V4 = data.channels[5];
-    leads.V5 = data.channels[6];
-    leads.V1 = data.channels[7];
+    // Precordial leads (computed in analog domain: Vn - WCT)
+    leads.V6 = data.channels[0];  // CH1: V6 - WCT
+    leads.V2 = data.channels[3];  // CH4: V2 - WCT
+    leads.V3 = data.channels[4];  // CH5: V3 - WCT
+    leads.V4 = data.channels[5];  // CH6: V4 - WCT
+    leads.V5 = data.channels[6];  // CH7: V5 - WCT
+    leads.V1 = data.channels[7];  // CH8: V1 - WCT
     
     return leads;
+}
+
+void printLeadOffStatus(const ADS1298R::Data& data) {
+    bool hasLeadOff = false;
+    for(int i = 0; i < 8; i++) {
+        if(data.leadOffStatus[i]) {
+            hasLeadOff = true;
+            break;
+        }
+    }
+    
+    if(hasLeadOff) {
+        Serial.print(",LEADOFF:");
+        for(int i = 0; i < 8; i++) {
+            if(data.leadOffStatus[i]) {
+                Serial.print("CH"); Serial.print(i+1); Serial.print(" ");
+            }
+        }
+    }
+}
+
+void printPaceStatus(const ADS1298R::Data& data) {
+    // Print pace status in your preferred format
+    // Always print pace status when pace detection is enabled
+    bool paceEnabled = true; // Assume pace is enabled if we're checking
+    
+    if(paceEnabled) {
+        // Print Pace1 status
+        Serial.print(",Pace1:");
+        Serial.print(data.paceDetected[0] ? "1" : "0");
+        
+        // Print Pace2 status  
+        Serial.print(",Pace2:");
+        Serial.print(data.paceDetected[1] ? "1" : "0");
+    }
 }
 
 void setup() {
     Serial.begin(115200);
     delay(3000);
     
-    Serial.println("ADS1298R ECG Monitor - Fixed Version");
+    Serial.println("ADS1298R 12-Lead ECG Monitor with Lead-off and Pace Detection");
     
     if (!ecg.begin()) {
         Serial.print("ERROR: Initialization failed - ");
@@ -158,79 +182,129 @@ void setup() {
         configure12LeadECG();
     #endif
     
-    verifyConfiguration();
-    
     ecg.startAcquisition();
-    Serial.println("✓ Acquisition started!\n");
+    Serial.println("Acquisition started!\n");
     
     #if ECG_MODE == 1
-        Serial.println("Format: aVL,aVF,aVR,L1,L2,L3");
+        Serial.println("Format: aVL,aVF,aVR,L1,L2,L3[,LEADOFF:channels][,Pace1:0/1,Pace2:0/1]");
     #elif ECG_MODE == 2
-        Serial.println("Format: aVL,aVF,aVR,L1,L2,L3,V1,V2,V3,V4,V5,V6");
-        Serial.println("Commands: s=stop, r=resume, i=info, t=test, v=verify, x=V6diag, n=notch");
+        Serial.println("Format: aVL,aVF,aVR,L1,L2,L3,V1,V2,V3,V4,V5,V6[,LEADOFF:channels][,Pace1:0/1,Pace2:0/1]");
     #endif
+    Serial.println("Commands: s=stop, r=resume, t=test, l=leadoff_status, p=pace_toggle, g=gpio_status, ?=help");
 }
 
 void loop() {
     if (ecg.isDataReady()) {
         ADS1298R::Data data;
         
-        #if ECG_MODE == 2
-            if (ecg.readDataWithQualityCheck(data)) {
-        #else
-            if (ecg.readData(data)) {
-        #endif
-            
+        if (ecg.readData(data)) {
             #if ECG_MODE == 1
                 SixLeadECG leads = calculate6LeadECG(data);
                 Serial.print(">");
-                Serial.print(leads.aVL); Serial.print(",");
-                Serial.print(leads.aVF); Serial.print(",");
-                Serial.print(leads.aVR); Serial.print(",");
-                Serial.print(leads.L1); Serial.print(",");
-                Serial.print(leads.L2); Serial.print(",");
-                Serial.print(leads.L3);
+                Serial.print("aVL:"); Serial.print(leads.aVL); Serial.print(",");
+                Serial.print("aVF:"); Serial.print(leads.aVF); Serial.print(",");
+                Serial.print("aVR:"); Serial.print(leads.aVR); Serial.print(",");
+                Serial.print("L1:"); Serial.print(leads.L1); Serial.print(",");
+                Serial.print("L2:"); Serial.print(leads.L2); Serial.print(",");
+                Serial.print("L3:"); Serial.print(leads.L3);
+                
+                // Add lead-off and pace status
+                printLeadOffStatus(data);
+                printPaceStatus(data);
                 Serial.println();
                 
             #elif ECG_MODE == 2
                 TwelveLeadECG leads = calculate12LeadECG(data);
-                
-                String qualFlag = "";
-                if (data.leadOffStatus[0]) qualFlag += "V6_OFF ";
-                if (abs(data.channels[0]) < 100) qualFlag += "V6_LOW ";
-                
                 Serial.print(">");
-                Serial.print("aVL:");Serial.print(leads.aVL); Serial.print(",");
-                Serial.print("aVF:");Serial.print(leads.aVF); Serial.print(",");
-                Serial.print("aVR:");Serial.print(leads.aVR); Serial.print(",");
-                Serial.print("L1:");Serial.print(leads.L1); Serial.print(",");
-                Serial.print("L2:");Serial.print(leads.L2); Serial.print(",");
-                Serial.print("L3:");Serial.print(leads.L3); Serial.print(",");
-                Serial.print("V1:");Serial.print(leads.V1); Serial.print(",");
-                Serial.print("V2:");Serial.print(leads.V2); Serial.print(",");
-                Serial.print("V3:");Serial.print(leads.V3); Serial.print(",");
-                Serial.print("V4:");Serial.print(leads.V4); Serial.print(",");
-                Serial.print("V5:");Serial.print(leads.V5); Serial.print(",");
-                Serial.print("V6:");Serial.print(leads.V6);
+                Serial.print("aVL:"); Serial.print(leads.aVL); Serial.print(",");
+                Serial.print("aVF:"); Serial.print(leads.aVF); Serial.print(",");
+                Serial.print("aVR:"); Serial.print(leads.aVR); Serial.print(",");
+                Serial.print("L1:"); Serial.print(leads.L1); Serial.print(",");
+                Serial.print("L2:"); Serial.print(leads.L2); Serial.print(",");
+                Serial.print("L3:"); Serial.print(leads.L3); Serial.print(",");
+                Serial.print("V1:"); Serial.print(leads.V1); Serial.print(",");
+                Serial.print("V2:"); Serial.print(leads.V2); Serial.print(",");
+                Serial.print("V3:"); Serial.print(leads.V3); Serial.print(",");
+                Serial.print("V4:"); Serial.print(leads.V4); Serial.print(",");
+                Serial.print("V5:"); Serial.print(leads.V5); Serial.print(",");
+                Serial.print("V6:"); Serial.print(leads.V6);
+                
+                // Add lead-off and pace status
+                printLeadOffStatus(data);
+                printPaceStatus(data);
                 Serial.println();
             #endif
         }
     }
     
+    // Serial commands
     if (Serial.available()) {
         char cmd = Serial.read();
         switch(cmd) {
-            case 's':
+            case 's':  // Stop
                 ecg.stopAcquisition();
-                Serial.println("\n✓ Acquisition stopped");
+                Serial.println("Acquisition stopped");
                 break;
                 
-            case 'r':
+            case 'r':  // Resume
                 ecg.startAcquisition();
-                Serial.println("\n✓ Acquisition resumed");
+                Serial.println("Acquisition resumed");
                 break;
                 
-            case 'i':
+            case 't':  // Test signal toggle
+                {
+                    static bool testEnabled = false;
+                    testEnabled = !testEnabled;
+                    ecg.setTestSignal(testEnabled ? ADS1298R::TEST_1MV_FAST : ADS1298R::TEST_DISABLED);
+                    Serial.print("Test signal: ");
+                    Serial.println(testEnabled ? "ON" : "OFF");
+                }
+                break;
+                
+            case 'l':  // Lead-off status
+                Serial.println("\n=== Lead-off Status ===");
+                for(int i = 0; i < 8; i++) {
+                    bool posOff, negOff;
+                    if(ecg.getLeadOffStatus(i, posOff, negOff)) {
+                        Serial.print("CH"); Serial.print(i+1); Serial.print(": ");
+                        if(!posOff && !negOff) {
+                            Serial.println("OK");
+                        } else {
+                            Serial.print("LEAD-OFF (");
+                            if(posOff) Serial.print("+ ");
+                            if(negOff) Serial.print("- ");
+                            Serial.println(")");
+                        }
+                    }
+                }
+                Serial.println("====================\n");
+                break;
+                
+            case 'p':  // Pace detection toggle
+                {
+                    static bool paceEnabled = true;
+                    paceEnabled = !paceEnabled;
+                    ecg.enablePace(paceEnabled);
+                    Serial.print("Pace detection: ");
+                    Serial.println(paceEnabled ? "ON" : "OFF");
+                }
+                break;
+                
+            case 'g':  // GPIO status (for pace debugging)
+                {
+                    uint8_t gpio = ecg.readGPIO();
+                    uint8_t pace = ecg.readRegister(ADS1298R::REG_PACE);
+                    Serial.println("\n=== Pace Debug Info ===");
+                    Serial.print("PACE Register: 0x"); Serial.println(pace, HEX);
+                    Serial.print("GPIO Status: 0x"); Serial.println(gpio, HEX);
+                    Serial.print("GPIO1 (Pace1): "); Serial.println((gpio & 0x01) ? "HIGH" : "LOW");
+                    Serial.print("GPIO2 (Pace2): "); Serial.println((gpio & 0x02) ? "HIGH" : "LOW");
+                    Serial.print("PACE Enabled: "); Serial.println((pace & 0x01) ? "NO" : "YES");
+                    Serial.println("======================\n");
+                }
+                break;
+                
+            case 'i':  // Info
                 Serial.println("\n=== Device Info ===");
                 Serial.print("Device ID: 0x"); Serial.println(ecg.getDeviceID(), HEX);
                 Serial.print("Acquiring: "); Serial.println(ecg.isAcquiring() ? "Yes" : "No");
@@ -238,65 +312,28 @@ void loop() {
                     Serial.println("Mode: 6-Lead ECG");
                 #elif ECG_MODE == 2
                     Serial.println("Mode: 12-Lead ECG");
+                    Serial.println("Sample Rate: 8kSPS (for pace detection)");
                 #endif
+                Serial.println("Lead-off: Enabled for all channels");
+                Serial.println("Pace: Enabled on Lead II and V1");
+                Serial.println("==================\n");
                 break;
                 
-            case 't':
-                {
-                    static bool testEnabled = false;
-                    testEnabled = !testEnabled;
-                    ecg.setTestSignal(testEnabled ? ADS1298R::TEST_1MV_FAST : ADS1298R::TEST_DISABLED);
-                    Serial.print("\n✓ Test signal: "); Serial.println(testEnabled ? "ON" : "OFF");
-                }
-                break;
-                
-            case 'v':
-                verifyConfiguration();
-                break;
-                
-            case 'x':
-                #if ECG_MODE == 2
-                    ecg.diagnoseV6Channel();
-                #endif
-                break;
-                
-            case 'n':
-                {
-                    static bool notchEnabled = true;
-                    notchEnabled = !notchEnabled;
-                    ecg.setNotchFilter(notchEnabled, notchEnabled);
-                    Serial.print("\n✓ Notch filters: "); Serial.println(notchEnabled ? "ON" : "OFF");
-                }
-                break;
-                
-            case 'd':
-                Serial.println("\n=== Raw Channel Data ===");
-                if (ecg.isDataReady()) {
-                    ADS1298R::Data debugData;
-                    if (ecg.readData(debugData)) {
-                        for(int i = 0; i < 8; i++) {
-                            Serial.print("CH"); Serial.print(i+1); 
-                            Serial.print(": "); Serial.print(debugData.channels[i]);
-                            if (debugData.leadOffStatus[i]) Serial.print(" [LEADOFF]");
-                            Serial.println();
-                        }
-                    }
-                }
-                break;
-                
-            case '?':
+            case '?':  // Help
                 Serial.println("\n=== Commands ===");
                 Serial.println("s - Stop acquisition");
                 Serial.println("r - Resume acquisition");
-                Serial.println("i - Device info");
                 Serial.println("t - Toggle test signal");
-                Serial.println("v - Verify configuration");
-                Serial.println("d - Debug raw data");
-                #if ECG_MODE == 2
-                    Serial.println("x - V6 channel diagnostics");
-                    Serial.println("n - Toggle notch filters");
-                #endif
+                Serial.println("l - Show lead-off status");
+                Serial.println("p - Toggle pace detection");
+                Serial.println("g - Show GPIO/pace debug info");
+                Serial.println("i - Device info");
                 Serial.println("? - Help");
+                Serial.println("================\n");
+                break;
+                
+            default:
+                Serial.println("Unknown command. Type '?' for help.");
                 break;
         }
     }

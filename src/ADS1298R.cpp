@@ -152,25 +152,11 @@ bool ADS1298R::readData(Data& data) {
     PicoSPI0.endTransaction();
     
     updateLeadOffStatus(data);
+    updatePaceStatus(data);
     
     data.timestamp = micros();
     data.valid = true;
     dataReady = false;
-    
-    return true;
-}
-
-bool ADS1298R::readDataWithQualityCheck(Data& data) {
-    if (!readData(data)) {
-        return false;
-    }
-    
-    uint8_t loffStatP = readRegister(REG_LOFF_STATP);
-    uint8_t loffStatN = readRegister(REG_LOFF_STATN);
-    
-    for (int i = 0; i < 8; i++) {
-        data.leadOffStatus[i] = (loffStatP & (1 << i)) || (loffStatN & (1 << i));
-    }
     
     return true;
 }
@@ -252,17 +238,6 @@ void ADS1298R::setRLD(uint8_t positiveMask, uint8_t negativeMask) {
     writeRegister(REG_RLD_SENSN, negativeMask);
 }
 
-void ADS1298R::setLeadOff(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold) {
-    uint8_t loff = threshold;
-    loff |= (uint8_t)current;
-    loff |= (uint8_t)freq;
-    writeRegister(REG_LOFF, loff);
-    
-    uint8_t config4 = readRegister(REG_CONFIG4);
-    config4 |= 0x02;
-    writeRegister(REG_CONFIG4, config4);
-}
-
 void ADS1298R::setNotchFilter(bool enable50Hz, bool enable60Hz) {
     uint8_t config2 = readRegister(REG_CONFIG2);
     config2 &= 0xFC;
@@ -287,105 +262,233 @@ uint8_t ADS1298R::readGPIO() {
     return readRegister(REG_GPIO) & 0x0F;
 }
 
+// ============================================================================
+// LEAD-OFF DETECTION FUNCTIONS
+// ============================================================================
+
+void ADS1298R::configureLeadOff(const LeadOffConfig& config) {
+    // Configure lead-off detection parameters
+    setLeadOffCurrent(config.current, config.frequency, config.threshold);
+    
+    // Set positive and negative sensing masks
+    uint8_t positiveMask = 0;
+    uint8_t negativeMask = 0;
+    
+    for(int i = 0; i < 8; i++) {
+        if(config.enabledPositive[i]) {
+            positiveMask |= (1 << i);
+        }
+        if(config.enabledNegative[i]) {
+            negativeMask |= (1 << i);
+        }
+    }
+    
+    writeRegister(REG_LOFF_SENSP, positiveMask);
+    writeRegister(REG_LOFF_SENSN, negativeMask);
+    
+    // Enable lead-off comparators in CONFIG4
+    uint8_t config4 = readRegister(REG_CONFIG4);
+    config4 |= 0x02;  // PD_LOFF_COMP=1
+    writeRegister(REG_CONFIG4, config4);
+}
+
+void ADS1298R::enableLeadOff(uint8_t channel, bool enablePositive, bool enableNegative) {
+    if (channel >= 8) {
+        lastError = ERR_INVALID_CHANNEL;
+        return;
+    }
+    
+    uint8_t positiveMask = readRegister(REG_LOFF_SENSP);
+    uint8_t negativeMask = readRegister(REG_LOFF_SENSN);
+    
+    if (enablePositive) {
+        positiveMask |= (1 << channel);
+    } else {
+        positiveMask &= ~(1 << channel);
+    }
+    
+    if (enableNegative) {
+        negativeMask |= (1 << channel);
+    } else {
+        negativeMask &= ~(1 << channel);
+    }
+    
+    writeRegister(REG_LOFF_SENSP, positiveMask);
+    writeRegister(REG_LOFF_SENSN, negativeMask);
+    
+    // Ensure lead-off comparators are enabled
+    uint8_t config4 = readRegister(REG_CONFIG4);
+    config4 |= 0x02;
+    writeRegister(REG_CONFIG4, config4);
+}
+
+void ADS1298R::disableLeadOff(uint8_t channel) {
+    enableLeadOff(channel, false, false);
+}
+
+void ADS1298R::setLeadOffCurrent(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold) {
+    uint8_t loff = (threshold & 0xE0);  // Bits 7-5: threshold
+    loff |= (uint8_t)current;           // Bits 4-2: current
+    loff |= (uint8_t)freq;              // Bits 1-0: frequency
+    writeRegister(REG_LOFF, loff);
+}
+
+bool ADS1298R::getLeadOffStatus(uint8_t channel, bool& positiveOff, bool& negativeOff) {
+    if (channel >= 8) {
+        lastError = ERR_INVALID_CHANNEL;
+        return false;
+    }
+    
+    uint8_t loffStatP = readRegister(REG_LOFF_STATP);
+    uint8_t loffStatN = readRegister(REG_LOFF_STATN);
+    
+    positiveOff = (loffStatP & (1 << channel)) != 0;
+    negativeOff = (loffStatN & (1 << channel)) != 0;
+    
+    return true;
+}
+
+uint8_t ADS1298R::getLeadOffStatusByte(bool positive) {
+    if (positive) {
+        return readRegister(REG_LOFF_STATP);
+    } else {
+        return readRegister(REG_LOFF_STATN);
+    }
+}
+
+// ============================================================================
+// PACE DETECTION FUNCTIONS
+// ============================================================================
+
+void ADS1298R::configurePace(PaceChannel oddChannel, PaceChannel evenChannel) {
+    uint8_t paceReg = 0x00;
+    
+    // Enable pace amplifiers (clear PD_PACE bit)
+    paceReg &= ~0x01;
+    
+    // Configure odd channel (PACEO[1:0] - bits 2:1)
+    if (oddChannel != PACE_DISABLED) {
+        uint8_t oddChannelCode = 0;
+        switch(oddChannel) {
+            case PACE_CH1: oddChannelCode = 0x00; break;
+            case PACE_CH3: oddChannelCode = 0x01; break;
+            case PACE_CH5: oddChannelCode = 0x02; break;
+            case PACE_CH7: oddChannelCode = 0x03; break;
+            default: oddChannelCode = 0x00; break;
+        }
+        paceReg |= (oddChannelCode << 1);
+    }
+    
+    // Configure even channel (PACEE[1:0] - bits 4:3)
+    if (evenChannel != PACE_DISABLED) {
+        uint8_t evenChannelCode = 0;
+        switch(evenChannel) {
+            case PACE_CH2: evenChannelCode = 0x00; break;
+            case PACE_CH4: evenChannelCode = 0x01; break;
+            case PACE_CH6: evenChannelCode = 0x02; break;
+            case PACE_CH8: evenChannelCode = 0x03; break;
+            default: evenChannelCode = 0x00; break;
+        }
+        paceReg |= (evenChannelCode << 3);
+    }
+    
+    writeRegister(REG_PACE, paceReg);
+    
+    // Configure GPIO1 as input for external pace detection
+    // GPIO direction: 0=output, 1=input
+    uint8_t gpioDir = 0x03;  // GPIO1 and GPIO2 as inputs
+    uint8_t gpioData = 0x00; // Initial data
+    setGPIO(gpioDir, gpioData);
+}
+
+void ADS1298R::enablePace(bool enable) {
+    uint8_t paceReg = readRegister(REG_PACE);
+    
+    if (enable) {
+        paceReg &= ~0x01;  // Clear PD_PACE bit (enable)
+    } else {
+        paceReg |= 0x01;   // Set PD_PACE bit (disable)
+    }
+    
+    writeRegister(REG_PACE, paceReg);
+}
+
+void ADS1298R::disablePace() {
+    uint8_t paceReg = 0x01;  // Power down pace amplifiers
+    writeRegister(REG_PACE, paceReg);
+}
+
+bool ADS1298R::getPaceStatus(uint8_t paceAmp) {
+    if (paceAmp > 1) return false;
+    
+    // PACE status is typically read from GPIO or status bits
+    // This is a simplified implementation - actual pace detection
+    // may require external circuitry and GPIO monitoring
+    uint8_t gpio = readGPIO();
+    
+    if (paceAmp == 0) {
+        return (gpio & 0x01) != 0;  // GPIO1 for PACE1
+    } else {
+        return (gpio & 0x02) != 0;  // GPIO2 for PACE2
+    }
+}
+
+// ============================================================================
+// WCT OPTIMIZATION
+// ============================================================================
+
 bool ADS1298R::configureWCTOptimized(bool enableChop) {
     if (!initialized) {
         lastError = ERR_NOT_INITIALIZED;
         return false;
     }
     
+    // Enable WCT chopping to reduce offset noise in precordial leads
     uint8_t config2 = readRegister(REG_CONFIG2);
     if (enableChop) {
-        config2 |= 0x80;
+        config2 |= 0x80;  // WCT_CHOP=1
     } else {
-        config2 &= ~0x80;
+        config2 &= ~0x80; // WCT_CHOP=0
     }
-    config2 &= ~0x10;
     writeRegister(REG_CONFIG2, config2);
     delay(10);
     
-    uint8_t wct1_target = 0x0B;
-    writeRegister(REG_WCT1, wct1_target);
+    // Configure WCT1: WCTA amplifier (typically RA electrode)
+    uint8_t wct1 = 0x0B;  // PD_WCTA=1, WCTA[2:0]=011 (CH2 negative input)
+    writeRegister(REG_WCT1, wct1);
     delay(5);
     
-    uint8_t wct1_verify = readRegister(REG_WCT1);
-    if (wct1_verify != wct1_target) {
-        lastError = ERR_REGISTER_VERIFY_FAILED;
-        return false;
-    }
-    
-    uint8_t wct2_target = 0xD4;
-    writeRegister(REG_WCT2, wct2_target);
+    // Configure WCT2: WCTB and WCTC amplifiers (typically LA and LL electrodes)
+    uint8_t wct2 = 0xD4;  // PD_WCTC=1, PD_WCTB=1, WCTB=010 (CH2+), WCTC=100 (CH3+)
+    writeRegister(REG_WCT2, wct2);
     delay(5);
     
-    uint8_t wct2_verify = readRegister(REG_WCT2);
-    if (wct2_verify != wct2_target) {
-        lastError = ERR_REGISTER_VERIFY_FAILED;
-        return false;
-    }
-    
+    // Connect WCT to RLD for better common-mode rejection
     uint8_t config4 = readRegister(REG_CONFIG4);
-    config4 |= 0x04;
-    config4 |= 0x02;
+    config4 |= 0x04;  // WCT_TO_RLD=1
+    config4 |= 0x02;  // PD_LOFF_COMP=1 (enable lead-off comparators)
     writeRegister(REG_CONFIG4, config4);
     
+    // Allow WCT amplifiers to settle
     delay(100);
     
+    // Verify configuration
+    uint8_t wct1_verify = readRegister(REG_WCT1);
+    uint8_t wct2_verify = readRegister(REG_WCT2);
     uint8_t config4_verify = readRegister(REG_CONFIG4);
-    if ((config4_verify & 0x06) != 0x06) {
+    
+    if (wct1_verify != wct1 || wct2_verify != wct2 || !(config4_verify & 0x04)) {
         lastError = ERR_REGISTER_VERIFY_FAILED;
         return false;
     }
-    
-    uint8_t loffSensP = 0xF9;
-    uint8_t loffSensN = 0xF9;
-    writeRegister(REG_LOFF_SENSP, loffSensP);
-    writeRegister(REG_LOFF_SENSN, loffSensN);
     
     lastError = ERR_NONE;
     return true;
 }
 
-void ADS1298R::diagnoseV6Channel() {
-    Serial.println("\n=== V6 Channel Diagnostics ===");
-    
-    uint8_t wct1 = readRegister(REG_WCT1);
-    uint8_t wct2 = readRegister(REG_WCT2);
-    uint8_t config4 = readRegister(REG_CONFIG4);
-    uint8_t ch1set = readRegister(REG_CH1SET);
-    
-    Serial.print("WCT1: 0x"); Serial.print(wct1, HEX);
-    Serial.print(" - WCTA: "); Serial.println((wct1 & 0x08) ? "ON" : "OFF");
-    
-    Serial.print("WCT2: 0x"); Serial.print(wct2, HEX);
-    Serial.print(" - WCTB: "); Serial.print((wct2 & 0x40) ? "ON" : "OFF");
-    Serial.print(", WCTC: "); Serial.println((wct2 & 0x80) ? "ON" : "OFF");
-    
-    Serial.print("CONFIG4: 0x"); Serial.print(config4, HEX);
-    Serial.print(" - WCT_TO_RLD: "); Serial.println((config4 & 0x04) ? "ON" : "OFF");
-    
-    Serial.print("CH1SET: 0x"); Serial.print(ch1set, HEX);
-    Serial.print(" - V6 Channel: "); Serial.println((ch1set & 0x80) ? "DISABLED" : "ENABLED");
-    
-    uint8_t loffStatP = readRegister(REG_LOFF_STATP);
-    uint8_t loffStatN = readRegister(REG_LOFF_STATN);
-    Serial.print("V6 Lead-off: P="); Serial.print((loffStatP & 0x01) ? "OFF" : "OK");
-    Serial.print(", N="); Serial.println((loffStatN & 0x01) ? "OFF" : "OK");
-    
-    Serial.println("Testing V6 with 1mV test signal...");
-    setTestSignal(TEST_1MV_FAST);
-    delay(100);
-    
-    if (isDataReady()) {
-        Data testData;
-        if (readData(testData)) {
-            Serial.print("V6 test amplitude: "); Serial.println(testData.channels[0]);
-            Serial.println("Expected: ~8388 counts for 1mV@gain=6");
-        }
-    }
-    
-    setTestSignal(TEST_DISABLED);
-    Serial.println("=== End V6 Diagnostics ===\n");
-}
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 void ADS1298R::reset() {
     PicoSPI0.beginTransaction();
@@ -446,6 +549,32 @@ void ADS1298R::updateLeadOffStatus(Data& data) {
     for (int i = 0; i < 8; i++) {
         data.leadOffStatus[i] = (loffStatP & (1 << i)) || (loffStatN & (1 << i));
     }
+}
+
+void ADS1298R::updatePaceStatus(Data& data) {
+    // PACE detection status is available through GPIO pins when configured
+    // Check if PACE amplifiers are enabled first
+    uint8_t paceReg = readRegister(REG_PACE);
+    bool paceEnabled = !(paceReg & 0x01);  // PD_PACE=0 means enabled
+    
+    if (!paceEnabled) {
+        data.paceDetected[0] = false;
+        data.paceDetected[1] = false;
+        return;
+    }
+    
+    // Read GPIO status for pace detection
+    uint8_t gpio = readGPIO();
+    
+    // PACE detection typically uses GPIO1 input for external pace detection
+    // The actual implementation depends on external circuitry
+    data.paceDetected[0] = (gpio & 0x01) != 0;  // PACE1 on GPIO1
+    data.paceDetected[1] = (gpio & 0x02) != 0;  // PACE2 on GPIO2
+    
+    // Alternative: Check status register bits if available
+    // Some implementations use status bits in the data stream
+    uint32_t status = data.status;
+    // Bits in status word may indicate pace detection - this is device specific
 }
 
 void ADS1298R::handleInterrupt() {

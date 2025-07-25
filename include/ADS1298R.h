@@ -76,6 +76,18 @@ public:
         LEADOFF_AC_DR = 0x03
     };
     
+    enum PaceChannel {
+        PACE_DISABLED = 0x00,
+        PACE_CH1 = 0x01,
+        PACE_CH2 = 0x02,
+        PACE_CH3 = 0x03,
+        PACE_CH4 = 0x04,
+        PACE_CH5 = 0x05,
+        PACE_CH6 = 0x06,
+        PACE_CH7 = 0x07,
+        PACE_CH8 = 0x08
+    };
+    
     enum ErrorCode {
         ERR_NONE = 0,
         ERR_SPI_INIT_FAILED,
@@ -93,6 +105,7 @@ public:
         int32_t channels[8];
         uint32_t timestamp;
         bool leadOffStatus[8];
+        bool paceDetected[2];  // PACE1 and PACE2 detection status
         bool valid;
         
         Data() {
@@ -103,6 +116,8 @@ public:
                 channels[i] = 0;
                 leadOffStatus[i] = false;
             }
+            paceDetected[0] = false;
+            paceDetected[1] = false;
         }
     };
     
@@ -113,6 +128,24 @@ public:
         
         ChannelConfig(bool en = false, Gain g = GAIN_6, InputMux inp = NORMAL_ELECTRODE) 
             : enabled(en), gain(g), input(inp) {}
+    };
+    
+    struct LeadOffConfig {
+        bool enabledPositive[8];
+        bool enabledNegative[8];
+        LeadOffCurrent current;
+        LeadOffFrequency frequency;
+        uint8_t threshold;
+        
+        LeadOffConfig() {
+            for(int i = 0; i < 8; i++) {
+                enabledPositive[i] = false;
+                enabledNegative[i] = false;
+            }
+            current = LEADOFF_6NA;
+            frequency = LEADOFF_DC;
+            threshold = 0x00;
+        }
     };
 
     static const uint8_t REG_ID = 0x00;
@@ -163,36 +196,54 @@ private:
     static const uint8_t CMD_WREG = 0x40;
 
 public:
+    // Constructor
     ADS1298R(uint8_t cs, uint8_t drdy, uint8_t start, uint8_t reset, uint32_t spiFreq = 1000000);
     
+    // Basic operations
     bool begin();
     bool startAcquisition();
     bool stopAcquisition();
     bool isDataReady();
     bool readData(Data& data);
-    bool readDataWithQualityCheck(Data& data);
     
+    // Register access
     void writeRegister(uint8_t address, uint8_t value);
     uint8_t readRegister(uint8_t address);
     
+    // Configuration helpers
     void setPowerMode(PowerMode mode, DataRate rate);
     void setChannel(uint8_t channel, const ChannelConfig& config);
     void setReference(ReferenceVoltage ref);
     void setTestSignal(TestSignal mode);
     void setRLD(uint8_t positiveMask, uint8_t negativeMask);
-    void setLeadOff(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold = 0x00);
     void setNotchFilter(bool enable50Hz, bool enable60Hz);
     void setGPIO(uint8_t direction, uint8_t data);
     uint8_t readGPIO();
     
-    bool configureWCTOptimized(bool enableChop = true);
-    void diagnoseV6Channel();
+    // Lead-off detection
+    void configureLeadOff(const LeadOffConfig& config);
+    void enableLeadOff(uint8_t channel, bool enablePositive, bool enableNegative);
+    void disableLeadOff(uint8_t channel);
+    void setLeadOffCurrent(LeadOffCurrent current, LeadOffFrequency freq, uint8_t threshold = 0x00);
+    bool getLeadOffStatus(uint8_t channel, bool& positiveOff, bool& negativeOff);
+    uint8_t getLeadOffStatusByte(bool positive);
     
+    // Pace detection
+    void configurePace(PaceChannel oddChannel, PaceChannel evenChannel);
+    void enablePace(bool enable);
+    void disablePace();
+    bool getPaceStatus(uint8_t paceAmp);  // 0 = PACE1, 1 = PACE2
+    
+    // 12-Lead ECG optimized configuration
+    bool configureWCTOptimized(bool enableChop = true);
+    
+    // Utility
     void reset();
     uint8_t getDeviceID();
     bool isAcquiring() const { return acquiring; }
     ErrorCode getLastError() const { return lastError; }
     
+    // Data conversion
     static float toVoltage(int32_t raw, Gain gain, float vref = 2.4f);
     static float toMillivolts(int32_t raw, Gain gain, float vref = 2.4f);
     static float toMicrovolts(int32_t raw, Gain gain, float vref = 2.4f);
@@ -200,8 +251,10 @@ public:
     static const char* getErrorString(ErrorCode error);
 
 private:
+    // Internal methods
     void sendCommand(uint8_t command);
     void updateLeadOffStatus(Data& data);
+    void updatePaceStatus(Data& data);
     static void handleInterrupt();
     static int getGainValue(Gain gain);
 };
